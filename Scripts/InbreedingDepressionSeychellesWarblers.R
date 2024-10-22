@@ -50,7 +50,7 @@ LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "100_ACAAGAACCT-CGATACTGAA_L
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "101_AGAGTATGTG-AGATGGCTTC_L002__all_mapped_rehead.bam")] <- 3227
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "96_CAACCATACA-ACCGGTTATA_L002__all_mapped_rehead.bam")] <- 764
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "97_GTAGGCCGTT-GCCACTGTCT_L002__all_mapped_rehead.bam")] <- 2688
-LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "98_GTAGGCCGTT-GCCACTGTCT_L002__all_mapped_rehead.bam")] <- 2493
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "98_CGGATTGATC-AGTCACAACA_L002__all_mapped_rehead.bam")] <- 2493
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "99_ACTGGCAAGA-TGTTGTCCAT_L002__all_mapped_rehead.bam")] <- 2522
 
 CoverageExtraSamples$ID[CoverageExtraSamples$Plate=="LIMS26629"]<-NA
