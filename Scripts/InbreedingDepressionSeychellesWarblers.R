@@ -7,7 +7,7 @@ library(readxl)
 library(openxlsx)
 library(ggplot2)
 library("data.table") 
-setwd("~/Documents/GitHub/InProgressGenomicsInbreedingSeychellesWarblers/Data")
+setwd("~/Documents/GitHub/InbreedingDepressionSeychellesWarbler/DataandResults")
 
 
 #Create the dataframe for the analysis
@@ -50,7 +50,7 @@ LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "100_ACAAGAACCT-CGATACTGAA_L
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "101_AGAGTATGTG-AGATGGCTTC_L002__all_mapped_rehead.bam")] <- 3227
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "96_CAACCATACA-ACCGGTTATA_L002__all_mapped_rehead.bam")] <- 764
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "97_GTAGGCCGTT-GCCACTGTCT_L002__all_mapped_rehead.bam")] <- 2688
-LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "98_GTAGGCCGTT-GCCACTGTCT_L002__all_mapped_rehead.bam")] <- 2493
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "98_CGGATTGATC-AGTCACAACA_L002__all_mapped_rehead.bam")] <- 2493
 LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "99_ACTGGCAAGA-TGTTGTCCAT_L002__all_mapped_rehead.bam")] <- 2522
 
 CoverageExtraSamples$ID[CoverageExtraSamples$Plate=="LIMS26629"]<-NA
@@ -120,6 +120,39 @@ MySequencedIndividuals$ID<-MySequencedIndividuals$SeqID
 MySequencedIndividuals$FROH<-MySequencedIndividuals$KB/1091184475*1000
 SequencedIndividualsBirdIDsExtraROH<- SequencedIndividualsBirdIDsExtra %>% 
   full_join(select(MySequencedIndividuals, FROH, SeqID), by = c("SeqID" = "SeqID"))
+
+##Large ROH (ROH>3.75Mb)
+MySequencedIndividualsLargeROH<-read_table("largeROH.hom.indiv")
+MySequencedIndividualsLargeROH$IID<-sub('.', '', MySequencedIndividualsLargeROH$IID)
+MySequencedIndividualsLargeROH<-MySequencedIndividualsLargeROH %>% separate(IID, c('Filepath1', 'Filepath2', 'Filepath3', 'Plate','Filepath4','SeqID'), sep = '/', convert = TRUE)
+MySequencedIndividualsLargeROH = subset(MySequencedIndividualsLargeROH, select = c(Plate, SeqID, NSEG, KB, KBAVG))
+MySequencedIndividualsLargeROH$ID<-MySequencedIndividualsLargeROH$SeqID
+MySequencedIndividualsLargeROH$FROH<-MySequencedIndividualsLargeROH$KB/1091184475*1000
+names(MySequencedIndividualsLargeROH)[names(MySequencedIndividualsLargeROH) == 'FROH'] <- 'LargeFROH'
+SequencedIndividualsBirdIDsExtraROH<- SequencedIndividualsBirdIDsExtra %>%
+  full_join(select(MySequencedIndividualsLargeROH, LargeFROH, SeqID), by = c("SeqID" = "SeqID"))
+
+##Medium ROH (ROH>1.36Mb)
+MySequencedIndividualsMediumROH<-read_table("mediumROH.hom.indiv")
+MySequencedIndividualsMediumROH$IID<-sub('.', '', MySequencedIndividualsMediumROH$IID)
+MySequencedIndividualsMediumROH<-MySequencedIndividualsMediumROH %>% separate(IID, c('Filepath1', 'Filepath2', 'Filepath3', 'Plate','Filepath4','SeqID'), sep = '/', convert = TRUE)
+MySequencedIndividualsMediumROH = subset(MySequencedIndividualsMediumROH, select = c(Plate, SeqID, NSEG, KB, KBAVG))
+MySequencedIndividualsMediumROH$ID<-MySequencedIndividualsMediumROH$SeqID
+MySequencedIndividualsMediumROH$FROH<-MySequencedIndividualsMediumROH$KB/1091184475*1000
+names(MySequencedIndividualsMediumROH)[names(MySequencedIndividualsMediumROH) == 'FROH'] <- 'MediumFROH'
+SequencedIndividualsBirdIDsExtraROH<- SequencedIndividualsBirdIDsExtraROH %>%
+  full_join(select(MySequencedIndividualsMediumROH, MediumFROH, SeqID), by = c("SeqID" = "SeqID"))
+
+##Small ROH (ROH>0.375Mb)
+MySequencedIndividualsSmallROH<-read_table("smallROH.hom.indiv")
+MySequencedIndividualsSmallROH$IID<-sub('.', '', MySequencedIndividualsSmallROH$IID)
+MySequencedIndividualsSmallROH<-MySequencedIndividualsSmallROH %>% separate(IID, c('Filepath1', 'Filepath2', 'Filepath3', 'Plate','Filepath4','SeqID'), sep = '/', convert = TRUE)
+MySequencedIndividualsSmallROH = subset(MySequencedIndividualsSmallROH, select = c(Plate, SeqID, NSEG, KB, KBAVG))
+MySequencedIndividualsSmallROH$ID<-MySequencedIndividualsSmallROH$SeqID
+MySequencedIndividualsSmallROH$FROH<-MySequencedIndividualsSmallROH$KB/1091184475*1000
+names(MySequencedIndividualsSmallROH)[names(MySequencedIndividualsSmallROH) == 'FROH'] <- 'SmallFROH'
+SequencedIndividualsBirdIDsExtraROH<- SequencedIndividualsBirdIDsExtraROH %>%
+  full_join(select(MySequencedIndividualsSmallROH, SmallFROH, SeqID), by = c("SeqID" = "SeqID"))
 
 ##Add in life-history traits
 #Lifespan ----
