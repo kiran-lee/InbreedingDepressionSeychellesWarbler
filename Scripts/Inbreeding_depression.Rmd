@@ -1,0 +1,1516 @@
+---
+title: "Genomics of Inbreeding in recently bottlenecked Seychelles warblers"
+author: "Kiran Gok Lune Lee"
+date: "`r Sys.Date()`"
+geometry: margin=2cm 
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+    fig_width: 12
+    fig_height: 10
+    output_file: "Kiran_Lee_Genomics_Inbreeding_Seychelles_warblers.html"
+  pdf_document:
+    latex_engine: xelatex
+    fig_width: 8
+    fig_height: 6
+    output_file: "Kiran_Lee_Genomics_Inbreeding_Seychelles_warblers.pdf"
+---
+
+## Set up environment
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_knit$set(root.dir = "~/Documents/GitHub/InProgressGenomicsInbreedingSeychellesWarblers/Data")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+R.Version()
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(openxlsx)
+library(ggplot2)
+library("data.table") 
+library("reshape2")
+library(sequoia)
+```
+
+# Create a massive dataframe
+
+## SeqIDs (1st round of imputation)
+
+Load SeqIDs of sequenced samples after first round of imputation by STITCH.
+
+```{r seqids1, eval = TRUE, echo = FALSE, include=TRUE}
+CoverageExtraSamples <- read.delim("coveragefilenameallsortedextrasamples.txt",sep=" ",header=F)
+names(CoverageExtraSamples)[names(CoverageExtraSamples) == 'V1'] <- 'SeqID'
+names(CoverageExtraSamples)[names(CoverageExtraSamples) == 'V2'] <- 'Coverage'
+CoverageExtraSamples$Filepath<-CoverageExtraSamples$SeqID
+CoverageExtraSamples$Filepath <- gsub("^.{0,4}", "", CoverageExtraSamples$Filepath)
+CoverageExtraSamples$SeqID<-sub('.', '', CoverageExtraSamples$SeqID)
+CoverageExtraSamples<-CoverageExtraSamples %>% separate(SeqID, c('Filepath1', 'Filepath2', 'Filepath3', 'Filepath4','Plate','Filepath5','SeqID'), sep = '/', convert = TRUE)
+CoverageExtraSamples = subset(CoverageExtraSamples, select = c(Plate, SeqID, Coverage, Filepath))
+CoverageExtraSamples$ID<-CoverageExtraSamples$SeqID
+
+```
+
+## BirdIDs
+
+Linking SeqIDs to BirdIDs as in field database
+
+```{r birdids, eval= TRUE, warning=FALSE, include=TRUE}
+##Files to match BirdIDs
+Identifiers<-read_excel("SheffieldSubmissions.xlsx")
+Identifiers26076<-read_excel("ID 26076_Sample information table.xlsx")
+PilotIdentifiers<-read_excel("SamplesForPilotTargetCapture_290119_sortBTN_Qubit.xlsx")
+LIMS26629renamed<-read.table("lims26629renamed.txt",sep=" ",header=F)
+LIMS26757p1raw4<-read.csv("Samples for Sequencing 25072023.csv",colClasses=c("NULL",NA,NA,NA,NA,NA))
+MissingLIMS26757p1raw4 <- data.frame(BirdID=c(6572,6145,6373,5904,6144,6651), 
+                                    FieldRing=c(NA,NA,NA,NA,NA,NA),
+                                    BTO=c(NA,NA,NA,NA,NA,NA), 
+                                    BloodID=c(8178, 5883,6287,5620,5880,7239), 
+                                    BloodTubeNumber=c(NA,NA,NA,NA,NA,NA), 
+                                    stringsAsFactors=FALSE)
+LIMS26757p1raw4<-rbind(LIMS26757p1raw4,MissingLIMS26757p1raw4)
+BloodID<-read.csv("BloodID.csv")
+
+##Clean ID numbers
+LIMS26629renamed<-LIMS26629renamed %>% arrange(V1)
+LIMS26629renamed$SeqID<-CoverageExtraSamples$SeqID[CoverageExtraSamples$Plate=='LIMS26629']
+LIMS26629renamed<-LIMS26629renamed %>%
+  mutate(SeqID=sort(SeqID))
+LIMS26629renamed$V1<-sub(".*\\-", "", LIMS26629renamed$V1)
+colnames(LIMS26629renamed)[colnames(LIMS26629renamed) == 'V1'] <- 'ID'
+
+#Fix 6 samples that were mislabeled, as identified by Rowan
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "100_ACAAGAACCT-CGATACTGAA_L002__all_mapped_rehead.bam")] <- 2544
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "101_AGAGTATGTG-AGATGGCTTC_L002__all_mapped_rehead.bam")] <- 3227
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "96_CAACCATACA-ACCGGTTATA_L002__all_mapped_rehead.bam")] <- 764
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "97_GTAGGCCGTT-GCCACTGTCT_L002__all_mapped_rehead.bam")] <- 2688
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "98_CGGATTGATC-AGTCACAACA_L002__all_mapped_rehead.bam")] <- 2493
+LIMS26629renamed$ID[which(LIMS26629renamed$SeqID == "99_ACTGGCAAGA-TGTTGTCCAT_L002__all_mapped_rehead.bam")] <- 2522
+
+CoverageExtraSamples$ID[CoverageExtraSamples$Plate=="LIMS26629"]<-NA
+CoverageExtraSamples <- merge(CoverageExtraSamples,LIMS26629renamed,by="SeqID", all = TRUE) %>%
+  mutate(ID = coalesce(ID.x, ID.y)) %>%
+  select (-c(ID.x, ID.y))
+
+
+
+PilotSequences<-subset(CoverageExtraSamples, CoverageExtraSamples$Plate=="LIMS24675"|CoverageExtraSamples$Plate=="LIMS25133")
+PilotSequences$ID<-trimws(sapply(strsplit(PilotSequences$ID, "_"), `[[`, 2))
+MissingBloodIDSequences<-subset(CoverageExtraSamples, CoverageExtraSamples$Plate == "LIMS26076p4"|CoverageExtraSamples$Plate == "LIMS26076raw")
+MissingBloodIDSequences$ID<-as.numeric(sapply(strsplit(MissingBloodIDSequences$ID, "_"), "[[", 1))
+BloodIDSequences<-subset(CoverageExtraSamples, CoverageExtraSamples$Plate!="LIMS24675"& CoverageExtraSamples$Plate!="LIMS25133"&CoverageExtraSamples$Plate != "LIMS26076p4"&CoverageExtraSamples$Plate != "LIMS26076raw" )
+BloodIDSequences$ID <- sub('_repeat','',BloodIDSequences$ID)
+BloodIDSequences$ID <- sub('-repeat','',BloodIDSequences$ID)
+BloodIDSequences$ID<-trimws(sapply(strsplit(BloodIDSequences$ID, "_"), `[[`, 1))
+BloodIDSequences$ID<-sub('.+-(.+)', '\\1', BloodIDSequences$ID)
+
+##Pilot sequences use Blood Tube Number, the rest use BloodID
+PilotSequences$Identifier<-paste("BloodTubeNumber")
+MissingBloodIDSequences$Identifier<-paste("BloodID")
+BloodIDSequences$Identifier<-paste("BloodID")
+
+##Make IDs numeric
+PilotSequences$ID<-as.numeric(PilotSequences$ID)
+BloodIDSequences$ID<-as.numeric(BloodIDSequences$ID)
+MissingBloodIDSequences$ID<-as.numeric(MissingBloodIDSequences$ID)
+Identifiers26076$Sample_number<-as.numeric(Identifiers26076$`Sample number`)
+Identifiers26076$BloodID<-as.numeric(Identifiers26076$`Sample name`)
+
+#Join BirdIDs
+PilotSequences <- PilotSequences %>% 
+  left_join(select(PilotIdentifiers, BirdID, BloodTubeNumber), by = c("ID" = "BloodTubeNumber"))
+
+BloodIDSequences$BloodID<-BloodIDSequences$ID
+BloodIDSequences <- BloodIDSequences %>% 
+  left_join(select(Identifiers, BirdID, BloodID), by = c("ID" = "BloodID"))
+names(BloodIDSequences)[names(BloodIDSequences) == 'BirdID.x'] <- 'BirdID'
+BloodIDSequences<-BloodIDSequences[!duplicated(BloodIDSequences), ]
+
+MissingBloodIDSequences <- MissingBloodIDSequences %>% 
+  left_join(select(Identifiers26076, Sample_number, BloodID), by = c("ID" = "Sample_number"))
+MissingBloodIDSequences <- MissingBloodIDSequences %>% 
+  left_join(select(Identifiers, BirdID, BloodID), by = c("BloodID" = "BloodID"))
+
+##Concatenate into one file (2018 individuals including duplicates)
+MissingBloodIDSequencesFormatted= subset(MissingBloodIDSequences, select = c(Plate, SeqID, Coverage, Filepath, BloodID, Identifier, BirdID))
+colnames(MissingBloodIDSequencesFormatted)[colnames(MissingBloodIDSequencesFormatted) == 'BloodID'] <- 'ID'
+BloodIDSequencesFormatted= subset(BloodIDSequences, select = c(Plate, SeqID, Coverage, Filepath, ID, Identifier, BirdID))
+SequencedIndividualsBirdIDs=rbind(PilotSequences,MissingBloodIDSequencesFormatted,BloodIDSequencesFormatted)
+
+##Add in missing BirdIDs from LIMS26757p1raw4
+SequencedIndividualsBirdIDsExtra<- SequencedIndividualsBirdIDs %>% 
+  left_join(select(LIMS26757p1raw4, BirdID, BloodID), by = c("ID" = "BloodID")) %>%
+  mutate(BirdID = coalesce(BirdID.x, BirdID.y)) %>%
+  select (-c(BirdID.x, BirdID.y))
+
+SequencedIndividualsBirdIDsExtraDeduplicated<- SequencedIndividualsBirdIDsExtra %>% 
+  group_by(BirdID) %>%
+  top_n(1, abs(Coverage))
+```
+
+## Test panel
+
+This script helped me find plates and well positions for cherry-picking samples at Liverpool to re-sequence. Samples were chosen following commands in the 9choosereferencepanel.sh bash script picking the best 250 coverage that were unrelated to at least a 2nd degree.
+
+```{r testpanel, eval=TRUE, warning=FALSE }
+##Choose samples to resequence
+BestCoverageUnrelated<-read.table("unrelatedimputedchromosomes250sampled2nddegree.king.cutoff.in.id")
+BestCoverageUnrelated$SeqID<-basename(BestCoverageUnrelated$V2)
+BestCoverageUnrelatedSampleID<- merge(BestCoverageUnrelated, SequencedIndividualsBirdIDsExtraDeduplicated, by="SeqID", all = FALSE)
+BestCoverageUnrelatedToResequence<-BestCoverageUnrelatedSampleID %>%
+  select(SeqID, Plate, ID, Identifier, BirdID, Coverage )
+###Add in plate and well numbers to help find libraries
+BestCoverageUnrelatedToResequenceWellID<- merge(BestCoverageUnrelatedToResequence, Identifiers, by="BirdID", all = FALSE)
+Identifiers26076<- Identifiers26076 %>% 
+  left_join(select(BloodIDSequences, BloodID, BirdID) , by = c("BloodID" = "BloodID"))
+BestCoverageUnrelatedToResequenceWellIDPlate <- merge(BestCoverageUnrelatedToResequenceWellID, Identifiers26076, by= "BirdID", all= TRUE)
+BestCoverageUnrelatedToResequenceWellIDPlate <- subset(BestCoverageUnrelatedToResequenceWellIDPlate, !is.na(BestCoverageUnrelatedToResequenceWellIDPlate$SeqID))
+BestCoverageUnrelatedToResequenceWellIDPlate <- BestCoverageUnrelatedToResequenceWellIDPlate[-c(18, 20, 21), ]
+
+BestCoverageUnrelatedToResequenceWellIDPlate <- subset(BestCoverageUnrelatedToResequenceWellIDPlate,BestCoverageUnrelatedToResequenceWellIDPlate$Identifier=="BloodID")
+
+BestCoverageUnrelatedToResequenceWellIDPlate <- subset(BestCoverageUnrelatedToResequenceWellIDPlate,BestCoverageUnrelatedToResequenceWellIDPlate$Plate.x!="LIMS24675")
+BestCoverageUnrelatedToResequenceWellIDPlate <- subset(BestCoverageUnrelatedToResequenceWellIDPlate,BestCoverageUnrelatedToResequenceWellIDPlate$Plate.x!="LIMS25133")
+
+openxlsx::write.xlsx(BestCoverageUnrelatedToResequenceWellIDPlate, file ="BestCoverageUnrelatedToResequenceWellIDPlate.xlsx", quote=FALSE)
+getwd()
+
+```
+
+This script creates a set of UNIX commands to merge re-sequenced samples creating a higher coverage test set to assess imputation accuracy. Re-sequenced samples were verified as duplicateds using PLINK.
+
+```{r warning=FALSE, include=FALSE}
+##Merge reference panel
+SequencedIndividualsBirdIDsExtraDeduplicated<- SequencedIndividualsBirdIDsExtra %>% 
+  group_by(BirdID) %>%
+  top_n(1, abs(Coverage))
+###These samples have been checked they are indeed duplicates using PLINK
+ReferencePanel<- read.delim("duplicatereferencepairs0.3na1.kin0",sep=" ",header=T,col.names=c("","Resequence","","SeqID","","","",""),row.names=NULL)
+ReferencePanel<- subset(ReferencePanel, select = -c(X,X.1,X.2,X.3,X.4,X.5) )
+ReferencePanel[] <- lapply(ReferencePanel, gsub, pattern='./Clean_aligned/', replacement='')
+
+#Add in filepaths
+ReferencePanel<-merge(ReferencePanel, SequencedIndividualsBirdIDsExtraDeduplicated , by="SeqID") %>%
+                        select(Resequence,Filepath) 
+ReferencePanel$Merged_output<-ReferencePanel$Filepath
+ReferencePanel$Resequence <- sub("^", "/fastdata/bop21kgl/RawData/LIMS202103/Clean_aligned/", ReferencePanel$Resequence )
+ReferencePanel$Merged_output<-gsub(".*/","",ReferencePanel$Merged_output)
+ReferencePanel$Merged_output <- sub("^", "/fastdata/bop21kgl/RawData/LIMSMERGED/Clean_aligned/", ReferencePanel$Merged_output )
+ReferencePanel$Command= "samtools merge"
+ReferencePanel<-ReferencePanel[,c(4,3,1,2)]
+
+#Write out commands for samtools to merge files
+write.table(ReferencePanel, file = "ReferencePanel.txt", sep = " ",
+            col.names = F, row.names = F, quote = FALSE)
+
+openxlsx::write.xlsx(ReferencePanel, file ="ReferencePanel.xlsx", quote=FALSE)
+
+```
+
+## SeqIDs (2nd round of imputation with "test" panel)
+
+```{r seqids2, eval=TRUE, echo=FALSE}
+
+TestPanelSamples<- read.delim("coveragefilenameallsortedextrasamplesimputed.txt",sep=" ",header=F)
+names(TestPanelSamples)[names(TestPanelSamples) == 'V1'] <- 'SeqID'
+names(TestPanelSamples)[names(TestPanelSamples) == 'V2'] <- 'Coverage'
+TestPanelSamples$Filepath<-TestPanelSamples$SeqID
+TestPanelSamples$Filepath <- gsub("^.{0,4}", "", TestPanelSamples$Filepath)
+TestPanelSamples$SeqID<-sub('.', '', TestPanelSamples$SeqID)
+TestPanelSamples<-TestPanelSamples %>% separate(SeqID, c('Filepath1', 'Filepath2', 'Filepath3', 'Filepath4','Plate','Filepath5','SeqID'), sep = '/', convert = TRUE)
+TestPanelSamples = subset(TestPanelSamples, select = c(Plate, SeqID, Coverage, Filepath))
+TestPanelSamples$ID<-TestPanelSamples$SeqID
+TestPanelSamples<-subset(TestPanelSamples, TestPanelSamples$Plate=="LIMSMERGED")
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  left_join(TestPanelSamples %>% select(SeqID, Plate, Coverage, Filepath), by = "SeqID", suffix = c(".orig", ".new")) %>%
+  mutate(
+    Plate = coalesce(Plate.new, Plate.orig),  # Replace Plate.orig with Plate.new
+    Coverage = coalesce(Coverage.new, Coverage.orig),  # Replace Coverage.orig with Coverage.new
+    Filepath = coalesce(Filepath.new, Filepath.orig)  # Replace Coverage.orig with Coverage.new
+  ) %>%
+  select(-Plate.new, -Coverage.new, -Filepath.new)  # Remove the extra columns from the join
+
+##Create downsample factor for samples to downsample using /SNPsSeychellesWarbler/blob/main/3_Imputation_accuracy/4downsamplecorrectcoverage.sh before imputing with STITCH
+DownsampleReferencePanel<-subset(SequencedIndividualsBirdIDsExtraDeduplicated, SequencedIndividualsBirdIDsExtraDeduplicated$Plate=="LIMSMERGED")
+DownsampleReferencePanel$Multiplier0.1X<-1/DownsampleReferencePanel$Coverage
+DownsampleReferencePanel<-DownsampleReferencePanel %>%
+  ungroup() %>%
+  select(Filepath, Multiplier0.1X)
+
+write.table(ReferencePanel, file = "downsamplescalingnew", sep = "\t",
+            col.names = F, row.names = F, quote = FALSE)
+
+```
+
+## Genotype sex
+
+This is important to check if we have assigned IDs correctly. If the sex of sample as calculated by imputed genotypes does not match the sex as recorded by microsatellites from the field database, something must be up.
+
+```{r sex, eval=TRUE, echo = TRUE, tidy=FALSE}
+##Load field database sex data
+BirdIDSexYear <- read_excel("BirdIDSexYear.xlsx")
+
+
+##Add in field database sex of bird
+SequencedIndividualsBirdIDsExtraDeduplicated <- merge(SequencedIndividualsBirdIDsExtraDeduplicated, BirdIDSexYear[, c("BirdID", "Sex")], by = "BirdID", all.x = TRUE)
+SequencedIndividualsBirdIDsExtraDeduplicated<-SequencedIndividualsBirdIDsExtraDeduplicated[!duplicated(SequencedIndividualsBirdIDsExtraDeduplicated),]
+
+##Add in genotype sex of bird (heterozygosity of Z chromosome)
+Zheterozygosity <- read.table("plink2.scount",header=TRUE, col.names=c("Filepath", "nHom", "nHet"))
+Zheterozygosity$Het<- Zheterozygosity$nHet/Zheterozygosity$nHom
+Zheterozygosity$Het <- round(Zheterozygosity$Het, 5)
+hist(Zheterozygosity$Het, breaks=120)
+
+##Add in genotype sex of bird (Z:W coverage and Autosome:Z coverage)
+SexChromosomeCoverage<-read.table(file = "zw_autosomew_coverageall_clean.txt",sep=" ",header=F, col.names = c("SeqID","RatioZW", "RatioAutosomesW", "RatioAutosomesZ", "Mean_autosomes_cov", "Z_cov" , "W_cov"),  fill = TRUE)
+SexChromosomeCoverage$Mean_autosomes_cov<-as.numeric(SexChromosomeCoverage$Mean_autosomes_cov)
+SexChromosomeCoverage$RatioZW<-as.numeric(SexChromosomeCoverage$RatioZW)
+SexChromosomeCoverage$RatioAutosomesW<-as.numeric(SexChromosomeCoverage$RatioAutosomesW)
+SexChromosomeCoverage$RatioAutosomesZ<-as.numeric(SexChromosomeCoverage$RatioAutosomesZ)
+hist(SexChromosomeCoverage$RatioZW, breaks=120)
+hist(SexChromosomeCoverage$RatioAutosomesW, breaks=120)
+hist(SexChromosomeCoverage$RatioAutosomesZ, breaks=120)
+SexChromosomeCoverage<- SexChromosomeCoverage %>% 
+  group_by(SeqID) %>%
+  top_n(1, abs(Mean_autosomes_cov))
+SexChromosomeCoverage<-SexChromosomeCoverage[!duplicated(SexChromosomeCoverage),]
+
+
+#0.08 is dividing point. 0.076 to 0.084 is unclear.
+Zheterozygosity <- Zheterozygosity %>%
+  mutate(ZHeterozygositySex = case_when(
+    Het > 0.084 ~ "0",           # If Het > 0.084, set Sex to "0"
+    Het < 0.076 ~ "1",           # If Het < 0.076, set Sex to "1"
+    #Het >= 0.076 & Het <= 0.084 ~ "Unsure",  # If Het is between 0.076 and 0.084, set Sex to "Unsure"
+    TRUE ~ NA_character_         # In case any other values exist, handle them
+  ))
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  left_join(Zheterozygosity %>% select(Filepath, Het, ZHeterozygositySex), by = "Filepath")
+
+
+
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated, aes(x = Het, fill = factor(Sex))) +
+  geom_histogram(bins = 120, alpha = 0.7, position = "identity", color = "black") +
+  scale_fill_manual(values = c("1" = "blue", "0" = "red")) +  # Blue for Sex=1, Red for Sex=0
+  labs(x = "Het", y = "Frequency", title = "Histogram of Het with Sex-based Colors") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+
+#2 is dividing point. 1.99 to 2.01 is unclear.
+SexChromosomeCoverage <- SexChromosomeCoverage %>%
+  mutate(RatioAutosomesZSex = case_when(
+    RatioAutosomesZ > 2.01 ~ "0",           # If Het > 2.01, set Sex to "0"
+    RatioAutosomesZ < 1.99 ~ "1",           # If Het < 1.99, set Sex to "1"
+    #RatioAutosomesZ >= 1.99 & RatioAutosomesZ <= 2.01 ~ "Unsure",  # If Het is between 1.99 and 2.01, set Sex to "Unsure"
+    TRUE ~ NA_character_         # In case any other values exist, handle them
+  ))
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  left_join(SexChromosomeCoverage , by = "SeqID")
+
+
+
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated, aes(x = RatioAutosomesZ, fill = factor(Sex))) +
+  geom_histogram(bins = 120, alpha = 0.7, position = "identity", color = "black") +
+  scale_fill_manual(values = c("1" = "blue", "0" = "red")) +  # Blue for Sex=1, Red for Sex=0
+  labs(x = "RatioAutosomes:ZCoverage", y = "Frequency", title = "Histogram of Autosomes:Z Coverage Ratio with Sex-based Colors") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(ZHeterozygositySex = case_when(
+    Het > 0.080 ~ "0",           # If Het > 0.084, set Sex to "0"
+    Het < 0.080 ~ "1",           # If Het < 0.076, set Sex to "1"
+    #Het >= 0.076 & Het <= 0.084 ~ "Unsure",  # If Het is between 0.076 and 0.084, set Sex to "Unsure"
+    TRUE ~ NA_character_         # In case any other values exist, handle them
+  ))
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(RatioAutosomesZSex = case_when(
+    RatioAutosomesZ > 2.00 ~ "0",           # If Het > 2.01, set Sex to "0"
+    RatioAutosomesZ < 2.00 ~ "1",           # If Het < 1.99, set Sex to "1"
+    #RatioAutosomesZ >= 1.99 & RatioAutosomesZ <= 2.01 ~ "Unsure",  # If Het is between 1.99 and 2.01, set Sex to "Unsure"
+    TRUE ~ NA_character_         # In case any other values exist, handle them
+  ))
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(ZHeterozygositySexMatch = ifelse(Sex == ZHeterozygositySex, "match", "no match"))
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(RatioAutosomesZSexMatch = ifelse(Sex == RatioAutosomesZSex, "match", "no match"))
+
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated, aes(x = Coverage, fill = ZHeterozygositySexMatch)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity", color = "black") +
+  scale_fill_manual(values = c("match" = "blue", "no match" = "red")) +  # Blue for match, Red for no match
+  labs(x = "Coverage", y = "Frequency", title = "Histogram of Coverage by ZHeterozygositySexMatch") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated, aes(x = Coverage, fill = RatioAutosomesZSexMatch)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity", color = "black") +
+  scale_fill_manual(values = c("match" = "blue", "no match" = "red")) +  # Blue for match, Red for no match
+  labs(x = "Coverage", y = "Frequency", title = "Histogram of Coverage by RatioAutosomesZSexMatch") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+
+ggplot(na.omit(SequencedIndividualsBirdIDsExtraDeduplicated[, c("Coverage", "ZHeterozygositySexMatch")]), aes(x = Coverage, y = ZHeterozygositySexMatch)) +
+  geom_point() +  # Adds scatter plot points
+  theme_minimal() +  # Uses a clean, minimal theme
+  labs(
+    title = "Coverage vs. ZHeterozygositySexMatch",
+    x = "Coverage",
+    y = "ZHeterozygositySexMatch"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),  # Center the title
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+ggplot(na.omit(SequencedIndividualsBirdIDsExtraDeduplicated[, c("Coverage", "RatioAutosomesZSexMatch")]), aes(x = Coverage, y = RatioAutosomesZSexMatch)) +
+  geom_point() +  # Adds scatter plot points
+  theme_minimal() +  # Uses a clean, minimal theme
+  labs(
+    title = "Coverage vs. RatioAutosomesZSexMatch",
+    x = "Coverage",
+    y = "Ratio of Autosomes to Z-Sex Match"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),  # Center the title
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(SexMatch = ifelse(ZHeterozygositySexMatch == "no match" & RatioAutosomesZSexMatch == "no match", "no match", "match"))
+
+ggplot(na.omit(SequencedIndividualsBirdIDsExtraDeduplicated[, c("Coverage", "SexMatch")]), aes(x = Coverage, y = SexMatch)) +
+  geom_point() +  # Adds scatter plot points
+  theme_minimal() +  # Uses a clean, minimal theme
+  labs(
+    title = "Coverage vs. SexMatch",
+    x = "Coverage",
+    y = "Sex Match using heterozygosity and coverage"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),  # Center the title
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated, aes(x = Coverage, fill = SexMatch)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity", color = "black") +
+  scale_fill_manual(values = c("match" = "blue", "no match" = "red")) +  # Blue for match, Red for no match
+  labs(x = "Coverage", y = "Frequency", title = "Histogram of Coverage by SexMatching of both methods") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+
+PlinkSexCheck<- read.table("plink.sexcheck", header = TRUE, col.names=c("Filepath", "Filepath1", "PEDSEX", "SNPSEX", "STATUS","F"))
+
+# Merge SequencedIndividualsBirdIDsExtraDeduplicated with PlinkSexCheck on Filepath, 
+# but only keep rows where PlinkSexCheck$F is not NA or has values
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  left_join(PlinkSexCheck %>% filter(!is.na(F)), by = "Filepath")
+
+
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated, aes(x = F, fill = factor(Sex))) +
+  geom_histogram(bins = 120, alpha = 0.7, position = "identity", color = "black") +
+  scale_fill_manual(values = c("1" = "blue", "0" = "red")) +  # Blue for Sex=1, Red for Sex=0
+  labs(x = "PLINK F", y = "Frequency", title = "Histogram of PLINK F with Sex-based Colors") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.position = "top")
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+    mutate(PLINKSex = case_when(
+    F > 0.03 ~ "1",          
+    F < 0.02 ~ "0",           
+    #F >= 0.02 & F <= 0.03 ~ "Unsure"
+    TRUE ~ NA_character_         # In case any other values exist, handle them
+  ))
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(PlinkSexMatch = ifelse(Sex == PLINKSex, "match", "no match"))
+
+
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  mutate(SexMatch = ifelse(ZHeterozygositySexMatch == "no match" & RatioAutosomesZSexMatch == "no match" & PlinkSexMatch=="no match" , "no match", "match"))
+
+
+
+
+```
+
+## ROH
+
+Include FROH as calculated by PLINK
+
+```{r roh, eval=TRUE, warning=FALSE, include=TRUE }
+##Large ROH (ROH>3.75Mb)
+MySequencedIndividualsLargeROH<-read_table("largeROHnew.hom.indiv")
+MySequencedIndividualsLargeROH$IID<-sub('.', '', MySequencedIndividualsLargeROH$IID)
+MySequencedIndividualsLargeROH<-MySequencedIndividualsLargeROH %>% separate(IID, c('Filepath1', 'Filepath2', 'Filepath3', 'Plate','Filepath4','SeqID'), sep = '/', convert = TRUE)
+MySequencedIndividualsLargeROH = subset(MySequencedIndividualsLargeROH, select = c(Plate, SeqID, NSEG, KB, KBAVG))
+MySequencedIndividualsLargeROH$ID<-MySequencedIndividualsLargeROH$SeqID
+MySequencedIndividualsLargeROH$FROH<-MySequencedIndividualsLargeROH$KB/1091184475*1000
+names(MySequencedIndividualsLargeROH)[names(MySequencedIndividualsLargeROH) == 'FROH'] <- 'LargeFROH'
+
+##Medium ROH (ROH>1.36Mb)
+MySequencedIndividualsMediumROH<-read_table("mediumROHnew.hom.indiv")
+MySequencedIndividualsMediumROH$IID<-sub('.', '', MySequencedIndividualsMediumROH$IID)
+MySequencedIndividualsMediumROH<-MySequencedIndividualsMediumROH %>% separate(IID, c('Filepath1', 'Filepath2', 'Filepath3', 'Plate','Filepath4','SeqID'), sep = '/', convert = TRUE)
+MySequencedIndividualsMediumROH = subset(MySequencedIndividualsMediumROH, select = c(Plate, SeqID, NSEG, KB, KBAVG))
+MySequencedIndividualsMediumROH$ID<-MySequencedIndividualsMediumROH$SeqID
+MySequencedIndividualsMediumROH$FROH<-MySequencedIndividualsMediumROH$KB/1091184475*1000
+names(MySequencedIndividualsMediumROH)[names(MySequencedIndividualsMediumROH) == 'FROH'] <- 'MediumFROH'
+
+##Small ROH (ROH>0.375Mb)
+MySequencedIndividualsSmallROH<-read_table("smallROHnew.hom.indiv")
+MySequencedIndividualsSmallROH$IID<-sub('.', '', MySequencedIndividualsSmallROH$IID)
+MySequencedIndividualsSmallROH<-MySequencedIndividualsSmallROH %>% separate(IID, c('Filepath1', 'Filepath2', 'Filepath3', 'Plate','Filepath4','SeqID'), sep = '/', convert = TRUE)
+MySequencedIndividualsSmallROH = subset(MySequencedIndividualsSmallROH, select = c(Plate, SeqID, NSEG, KB, KBAVG))
+MySequencedIndividualsSmallROH$ID<-MySequencedIndividualsSmallROH$SeqID
+MySequencedIndividualsSmallROH$FROH<-MySequencedIndividualsSmallROH$KB/1091184475*1000
+names(MySequencedIndividualsSmallROH)[names(MySequencedIndividualsSmallROH) == 'FROH'] <- 'SmallFROH'
+
+# Perform the joins
+ROH <- MySequencedIndividualsLargeROH
+ROH$MediumFROH<-MySequencedIndividualsMediumROH$MediumFROH
+ROH$SmallFROH<-MySequencedIndividualsSmallROH$SmallFROH
+ROH$LargeFROHbin<-ROH$LargeFROH
+ROH$MediumFROHbin<-ROH$MediumFROH-(ROH$LargeFROH)
+ROH$SmallFROHbin<-ROH$SmallFROH-(ROH$MediumFROH)
+
+ROH <- ROH %>%
+  arrange(SeqID, desc(Plate == "LIMSMERGED")) %>%
+  distinct(SeqID, .keep_all = TRUE)
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  left_join(ROH %>% select(SeqID, LargeFROHbin, MediumFROHbin, SmallFROHbin), by = "SeqID")
+
+
+```
+
+Call ROH using RZooRoH.
+Sergio wants to use this in Zebra-finch, we can help each other out.
+
+```{r eval=FALSE, echo=FALSE, include==FALSE}
+#install.packages("RZooRoH", repos = "http://cran.us.r-project.org")
+#Check out the package
+library(RZooRoH)
+## load data
+SNPs <- zoodata(genofile = "rzoorohGP.gen", zformat = "gp")
+## define model (e.g. if you simply want to capture all segments, you can put 4 classes 10, 100, 1000 + non-HBD)
+mix4R <- zoomodel(K=4, base=10, err = 0.0025, layers=TRUE)
+## run model on data
+SNPsmodel <- zoorun(mix4R, SNPs, localhbd = TRUE)
+
+```
+
+## Life-history traits
+
+```{r life-history, eval=TRUE, echo=FALSE, include=TRUE}
+#Lifespan ----
+##Read files
+BirthDate <- read_csv("BirthDate27032023.csv", col_types = cols(BirthDate = col_date(format = "%d/%m/%Y"))) #In query table, this is BirdID
+LastSeenYear <- read_csv("CurrentBTOextended27032023.csv") #In query table, this is CurrentBTOextended
+BirdIDSexYear <- read_excel("BirdIDSexYear.xlsx")
+
+##Make terms
+###BirthYear from BirthDate
+BirthDate <- BirthDate %>% 
+  mutate(BirthYear = format(BirthDate, "%Y")) %>%
+  mutate(BirthYear = as.numeric(BirthYear))
+
+###Lifespan
+Lifespan <- merge(BirthDate,LastSeenYear,by="BirdID", all = TRUE) %>% 
+  mutate(LastSeenYea = as.numeric(LastSeenYea)) %>%
+  mutate(BirthYear = as.numeric(BirthYear)) %>%
+  mutate(Lifespan = LastSeenYea - BirthYear) %>%
+  filter(LastSeenYea < 2022)  %>%
+  select(BirdID,Lifespan,BirthYear,LastSeenYea)
+colnames(Lifespan)[colnames(Lifespan) == 'LastSeenYea'] <- 'LastSeenYear'
+
+##Link lifespan to dataframe
+SequencedIndividualsBirdIDsExtraDeduplicated<- merge(SequencedIndividualsBirdIDsExtraDeduplicated, Lifespan, by="BirdID", all = TRUE)
+
+##Link n offspring to dataframe
+Offspring <- read_csv("Offspring27032023.csv",col_types = cols(BirthDate = col_date(format = "%d/%m/%Y")))
+ROcount <- Offspring %>% filter(Confidence > 80) %>% count(Parent) %>% rename(BirdID = Parent,ReproductiveOutput = n)
+SequencedIndividualsBirdIDsExtraDeduplicated<- merge(SequencedIndividualsBirdIDsExtraDeduplicated, ROcount, by="BirdID", all = TRUE)
+
+SequencedIndividualsBirdIDsExtraDeduplicated <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  filter(!is.na(SeqID))
+
+
+```
+
+## Pedigree
+
+Pedigree construction by *sequoia.* 572 SNPs were filtered for minor allele frequency \> 0.3, genotyping rate \> 99.9 and for linkage and also excluding SNPs on sex chromosomes and on chromosomes with \<90% imputation accuracy.
+
+```{r pedigree, eval = TRUE, echo = TRUE, tidy=FALSE}
+#Deduplicate samples for sequioa as it doesn't handle duplicates
+DeduplicatedforSequoia<-data.frame(rep("0",length(SequencedIndividualsBirdIDsExtraDeduplicated$Filepath)),SequencedIndividualsBirdIDsExtraDeduplicated$Filepath)
+write.table(DeduplicatedforSequoia, file = "DeduplicatedforSequoia.txt", sep = "\t",
+            col.names = F, row.names = F, quote = FALSE)
+
+#Rename samples for sequioa to BirdIDs
+RenameforSequoia<-data.frame(rep("0",length(SequencedIndividualsBirdIDsExtraDeduplicated$Filepath)),SequencedIndividualsBirdIDsExtraDeduplicated$Filepath,rep("0",length(SequencedIndividualsBirdIDsExtraDeduplicated$Filepath)),SequencedIndividualsBirdIDsExtraDeduplicated$BirdID)
+write.table(RenameforSequoia, file = "RenameforSequoia.txt", sep = "\t",
+            col.names = F, row.names = F, quote = FALSE)
+
+#Read in SNPs in .raw format
+sw_GenoM_family <- GenoConvert(InFile = "reimputedinputfile_for_sequoia.raw", InFormat="raw")
+
+#Read in pedigree from masterbayes
+masterped <- read.csv("pedFINAL_var124567_combined_unique_20230413.csv")
+head(masterped)
+names(masterped)[names(masterped) == 'dad'] <- 'sire'
+names(masterped)[names(masterped) == 'mum'] <- 'dam'
+
+#drop unnecessary column
+masterped <- masterped[-c(4)]
+
+#Read in life history data
+sw_LifeHistData <- read.csv("LifeHistoryData.csv", header = TRUE)
+sw_LifeHistData<-sw_LifeHistData[!duplicated(sw_LifeHistData),]
+sw_LifeHistData$Sex <- case_when(sw_LifeHistData$Sex == "0" ~ 1, 
+                                 sw_LifeHistData$Sex == "1" ~ 2, 
+                                 TRUE ~ 3)
+
+#drop birds born before 1991 as they are not sampled
+sw_LifeHistData <- sw_LifeHistData[sw_LifeHistData$Year > 1990,]
+
+#drop birds not in cousin
+sw_LifeHistData <- sw_LifeHistData[sw_LifeHistData$Island == "CN",]
+
+#drop unnecessary column
+sw_LifeHistData <- sw_LifeHistData[,-2]
+sw_LifeHistData <- sw_LifeHistData[,-3]
+
+sw_LifeHistData<-na.omit(sw_LifeHistData)
+
+#Looks like lots of duplicate BirdIDs so create new life hist file
+BirthDate <- read_csv("BirthDate27032023.csv", col_types = cols(BirthDate = col_date(format = "%d/%m/%Y"))) #In query table, this is BirdID
+BirdIDSexYear <- read_excel("BirdIDSexYear.xlsx")
+lifehist<- merge(BirthDate, BirdIDSexYear, by= "BirdID", all= TRUE)%>%
+  select(BirdID,Sex,BirthDate)
+lifehist<-lifehist[!duplicated(lifehist),]
+lifehist$Sex <- case_when(lifehist$Sex == "0" ~ 1, 
+                          lifehist$Sex == "1" ~ 2, 
+                                 TRUE ~ 3)
+lifehist$BirthDate<-format(as.Date(lifehist$BirthDate, format="%Y/%m/%d"),"%Y")
+colnames(lifehist)[colnames(lifehist) == 'BirthDate'] <- 'Year'
+lifehist<-lifehist[-c(1, 2), ]  
+
+# 1. Initial diagnostics --------------------------------------------------
+
+# Check genotype calls across the dataset (-9 = missing calls)
+summary.factor(as.factor(sw_GenoM_family))/(nrow(sw_GenoM_family)*ncol(sw_GenoM_family))
+
+# Check for Mendelian errors in the data at the locus level
+GenoM_checks <- SnpStats(sw_GenoM_family, Ped = masterped[,c("id", "dam", "sire")])
+
+ggplot(GenoM_checks, aes(x = OHdam)) + geom_histogram() + theme_classic()
+ggplot(GenoM_checks, aes(x = OHsire)) + geom_histogram() + theme_classic()
+sw_OHLLR_DATABASE <- CalcOHLLR(Pedigree = masterped[,c("id", "dam", "sire")], GenoM = sw_GenoM_family)
+ggplot(sw_OHLLR_DATABASE, aes(y = LLRdam, x = OHdam)) + geom_point(alpha = 0.6) + theme_classic()
+ggplot(sw_OHLLR_DATABASE, aes(y = LLRsire, x = OHsire)) + geom_point(alpha = 0.6) + theme_classic()
+SummarySeq(sw_OHLLR_DATABASE, Panels = "OH")
+
+# 2. Run basic sequoia ------------------------------------
+
+# Note modules used to build up from basic input check to analysis:
+# i.   'pre': Input check
+# ii.  'dup': check for duplicates
+# iii. 'par': parentage assignment
+# iv.  'ped': full pedigree reconstruction
+
+# Just parentage assignment (Module = "par"). 
+sw_family_sequoia_justparents <- sequoia(GenoM = sw_GenoM_family, LifeHistData = lifehist, Module = "par", quiet="verbose", args.AP = list(MaxAgeParent = c(19)))
+
+# A 94.0% match to the masterbayes pedigree
+sw_family_pedigree_justparents_comparison <- PedCompare(masterped[,c("id", "dam", "sire")], sw_family_sequoia_justparents$Pedigree, Plot=TRUE, Symmetrical = TRUE)
+
+SummarySeq(SeqList = sw_family_sequoia_justparents)
+
+
+# Full pedigree reconstruction (Module = "ped"). Hashed out of knit because takes too long.
+#sw_family_sequoia <- sequoia(GenoM = sw_GenoM_family, LifeHistData = lifehist, Module = "ped", quiet="verbose", args.AP = list(MaxAgeParent = c(19)))
+#sw_family_pedigree_comparison <- PedCompare(masterped[,c("id", "dam", "sire")], sw_family_sequoia$Pedigree, Plot=TRUE)$MergedPed
+
+```
+
+## Demographic history
+
+Demographic history inference using GONE.
+
+```{r demographic_history, eval = TRUE, echo = TRUE, tidy=FALSE}
+#Generation time calculation
+##add parent birth date from "BirthDate" to "Offspring"
+BirthDate$Parent<-BirthDate$BirdID
+OffspringParentBirthDate<-merge(Offspring, BirthDate, by= "Parent", all =TRUE)
+OffspringParentBirthDate$ParentBirthDate<-OffspringParentBirthDate$BirthDate.y
+
+##calculate mean birth date difference
+OffspringParentBirthDate$BirthDateDifference<-OffspringParentBirthDate$BirthDate.x-OffspringParentBirthDate$ParentBirthDate
+BirthDateDifference<-(!is.na (OffspringParentBirthDate$BirthDateDifference))
+BirthDateDifference <- subset(OffspringParentBirthDate$BirthDateDifference, !is.na(OffspringParentBirthDate$BirthDateDifference))
+
+mean(OffspringParentBirthDate$BirthDateDifference, na.rm = TRUE)
+1764/365 ##4.8 generation time
+
+#Load output from GONE
+GONE<-read.table("outfileLD_Ne_estimates",header=F, fill=TRUE)
+GONE <- GONE[-c(1, 2), ]
+rownames(GONE) <- NULL
+colnames(GONE) <- c("Generation", "Ne")
+GONE$YearsAgo<-as.numeric(GONE$Generation)*4.8
+GONE$Ne<-as.numeric(GONE$Ne)
+GONE$Generation<-as.numeric(GONE$Generation)
+
+
+#Plot. NB I will need to iterate this to get confidence intervals
+ggplot(GONE, aes(x = Generation, y = Ne)) +
+  geom_point(color = "blue") +
+  scale_x_continuous(breaks = seq(0, 2000, by = 200)) +  # Set specific breaks
+  labs(x = "Generation", y = "Ne", title = "Plot of Generations vs Ne") +
+  theme_minimal()
+```
+## Inbreeding depression
+
+Investigate co-variation between individual inbreeding coefficients and key life-history traits. It looks like there is more evidence of inbreeding depression from recent inbreeding. Include control variables once Pinto returns from field, as agreed.
+
+```{r inbreeding_depression, eval = TRUE, echo = TRUE}
+##Inbreeding (FROH) depression (Lifespan and N offspring produced in lifetime)
+LargeROHxLifespan<-ggplot(dplyr::filter(SequencedIndividualsBirdIDsExtraDeduplicated), aes(x=LargeFROHbin, y=Lifespan)) + geom_point() + geom_smooth(method='lm') 
+LargeROHxLifespan
+
+MediumROHxLifespan<-ggplot(dplyr::filter(SequencedIndividualsBirdIDsExtraDeduplicated), aes(x=MediumFROHbin, y=Lifespan)) + geom_point() + geom_smooth(method='lm') 
+MediumROHxLifespan
+
+SmallROHxLifespan<-ggplot(dplyr::filter(SequencedIndividualsBirdIDsExtraDeduplicated), aes(x=SmallFROHbin, y=Lifespan)) + geom_point() + geom_smooth(method='lm') 
+SmallROHxLifespan
+
+
+```
+
+## Inbreeding avoidance
+
+Calculate relatedness of all pedigree pairs confirmed by sequoia and how that matches up to pairwise relatedness of all adults.
+Sen and Sergio have done some work here, we can help each other out.
+
+```{r inbreeding_avoidance, eval = TRUE, echo = TRUE}
+
+
+# Ensure the necessary columns are of the same type (character)
+Lifespan$BirdID <- as.character(Lifespan$BirdID)
+
+
+# Merge Rel.both with Lifespan for IID1 and IID2
+Rel.both.alive <- Rel.both %>%
+  left_join(Lifespan, by = c("IID1" = "BirdID"), suffix = c("_1", "_"))
+Rel.both.alive <- Rel.both.alive %>%
+  left_join(Lifespan, by = c("IID2" = "BirdID"), suffix = c("_1", "_2"))
+
+# Check for overlap in BirthYear and LastSeenYear
+Rel.both.alive <- Rel.both.alive %>%
+  filter(BirthYear_1 <= LastSeenYear_2 & BirthYear_2 <= LastSeenYear_1)
+
+masterped_nonmissing <- masterped[!is.na(masterped$mum) & !is.na(masterped$dad), ]
+
+# Ensure both are data frames
+masterped_nonmissing <- as.data.frame(masterped_nonmissing)
+Rel.both.alive <- as.data.frame(Rel.both.alive)
+
+# Create a helper column to represent the two possible pairings
+masterped_nonmissing$pair1 <- paste(masterped_nonmissing$mum, masterped_nonmissing$dad, sep = "_")
+masterped_nonmissing$pair2 <- paste(masterped_nonmissing$dad, masterped_nonmissing$mum, sep = "_")
+
+# Create a new column in Rel.both.alive for the pair combination of IID1 and IID2
+Rel.both.alive$pair <- paste(Rel.both.alive$IID1, Rel.both.alive$IID2, sep = "_")
+
+# Subset Rel.both.alive to include only rows where the pair is present in masterped_nonmissing
+Rel.both.alive.partners <- Rel.both.alive %>%
+  filter(pair %in% masterped_nonmissing$pair1 | pair %in% masterped_nonmissing$pair2)
+
+
+# Calculate the mean of Rel.both.alive.partners$R.GRM
+mean_R_GRM <- mean(Rel.both.alive.partners$R.GRM, na.rm = TRUE)
+
+# Create a ggplot2 histogram for Rel.both.alive$R.GRM with the mean line
+ggplot(Rel.both.alive, aes(x = R.GRM)) +
+  geom_histogram(binwidth = 0.1, fill = "lightblue", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean_R_GRM, color = "red", linetype = "dashed", size = 1.5) +
+  labs(title = "Histogram of R.GRM", x = "R.GRM", y = "Frequency") +
+  theme_minimal()
+
+
+
+
+
+
+
+```
+
+## GWAS
+
+In progress. Adapting script from Stoffel et. al 2021: <https://github.com/mastoffel/sheep_ID/blob/master/6_alt_gwas_annual_survival_bothA_sep.R>
+We need to fit an inbreeding depression model for each SNP.
+Then use the functional annotations if any SNP turns up.
+Chuen has done some  work on this with microbiome/fitness, we can help each other out.
+
+```{r gwas, eval = FALSE, echo = TRUE}
+
+library(lme4)
+library(tidyverse)
+library(broom.mixed)
+library(snpStats)
+library(data.table)
+library(furrr)
+
+# for running on server, this allows to run an array job for splitting
+# the GWAS up in parts
+part_inp  <- commandArgs(trailingOnly=TRUE)
+if (!(length(part_inp) == 0)) {
+        part <- as.numeric(part_inp[[1]])
+} else {
+        # if no part selected, take first 1000
+        part <- 1000
+}
+
+
+# GRM PCs from plink
+pcs <- read_delim("data/ann_surv_pca.txt", " ", col_names = TRUE) %>% 
+        mutate(id = as.character(id))
+
+# roh data
+file_path <- "data/roh.hom"
+roh_lengths <- fread(file_path)
+
+# plink name
+sheep_plink_name <- "data/sheep_geno_imputed_oar_filt"
+# read merged plink data
+sheep_bed <- paste0(sheep_plink_name, ".bed")
+sheep_bim <- paste0(sheep_plink_name, ".bim")
+sheep_fam <- paste0(sheep_plink_name, ".fam")
+full_sample <- read.plink(sheep_bed, sheep_bim, sheep_fam)
+
+# make list with all parts
+all_snps <- 1:nrow(full_sample$map)
+all_parts <- split(all_snps, ceiling(seq_along(all_snps )/1000)) # every part runs 500 models
+snp_indices <- all_parts[[part]]
+
+# filter map data
+snps_map_sub <- as_tibble(full_sample$map[snp_indices, ])
+# additive genotypes
+geno_sub <- as_tibble(as(full_sample$genotypes[, snps_map_sub$snp.name], Class = "numeric"),
+                      rownames = "id")
+# survival data
+# survival data preprocessing
+annual_survival <- fitness_data %>% 
+        # filter na rows
+        filter_at(vars(survival, froh_all, birth_year, sheep_year), ~ !is.na(.)) %>% 
+        mutate(age_cent = age - mean(age, na.rm = TRUE),
+               age_cent2 = age_cent^2,
+               age_std = as.numeric(scale(age)),
+               age_std2 = age_std^2,
+               # times 10 to estimate a 10% percent increase
+               froh_all10 = froh_all * 10,
+               froh_all10_cent = froh_all10 - mean(froh_all10, na.rm = TRUE),
+               lamb = ifelse(age == 0, 1, 0),
+               lamb_cent = lamb - mean(lamb, na.rm = TRUE),
+               lamb = as.factor(lamb)) %>% 
+        as.data.frame() 
+
+#roh_lengths <- as.data.table(roh_lengths)
+# check whether snp is in ROH for a given individual
+
+setkey(roh_lengths, IID)
+roh_id_per_snp <- function(i) {
+        position <- as.numeric(snps_map_sub[i, "position"])
+        chromosome <- as.numeric(snps_map_sub[i, "chromosome"])
+        # varname <- paste0("roh", i)
+        #roh <- as.numeric((roh_lengths$POS1 <= position) & (roh_lengths$POS2 >= position) & (roh_lengths$CHR == chromosome))
+        #roh_lengths$roh <- roh
+        roh_lengths[, roh := as.numeric((CHR == chromosome) & (POS1 <= position) & (POS2 >= position))]
+        #roh_lengths[, roh := fifelse((POS1 <= position)&(POS2 >= position)&(CHR == chromosome), 1, 0)]
+        roh_id <- roh_lengths[,  .(roh = max(roh)), by = c("IID")]$roh
+}
+
+roh_ind <- map(1:nrow(snps_map_sub), roh_id_per_snp)
+roh_df <- as.data.frame(do.call(cbind, roh_ind))
+names(roh_df) <- paste0("roh_", snps_map_sub$snp.name)
+roh_df$id <- as.character(unique(roh_lengths$IID))
+
+
+# make some space
+rm(full_sample)
+
+# which chromosomes do the snps span?
+chrs <- unique(snps_map_sub$chromosome)
+froh_no_chr <- paste0("froh_no_chr", chrs)
+# join additive and roh data to survival for gwas
+annual_survival_gwas <- annual_survival %>% 
+        #mutate_at(vars(starts_with("froh_no_chr")), scale) %>% 
+        dplyr::select(id, survival, sex, twin, lamb, birth_year, sheep_year, mum_id, age_std, age_std2, {{ froh_no_chr }}) %>% 
+        left_join(pcs, by = "id") %>% 
+        left_join(geno_sub, by = "id") %>% 
+        left_join(roh_df, by = "id") %>% 
+        as_tibble()
+
+snp_names <- snps_map_sub$snp.name
+#snp_names <- top_snps %>% group_by(chromosome) %>% top_n(-2, p.value) %>% .$snp.name
+for (i in snp_names) {
+        # dummy coding
+        annual_survival_gwas[[paste0("roh_0_", i)]] <- as.numeric((annual_survival_gwas[[i]] == 0) & (annual_survival_gwas[[paste0("roh_", i)]] == 1))
+        annual_survival_gwas[[paste0("roh_2_", i)]] <- as.numeric((annual_survival_gwas[[i]] == 2) & (annual_survival_gwas[[paste0("roh_", i)]] == 1))
+        annual_survival_gwas[[paste0("roh_", i)]] <- NULL
+}
+
+# time saver function for modeling
+nlopt <- function(par, fn, lower, upper, control) {
+        .nloptr <<- res <- nloptr(par, fn, lb = lower, ub = upper, 
+                                  opts = list(algorithm = "NLOPT_LN_BOBYQA", print_level = 1,
+                                              maxeval = 1000, xtol_abs = 1e-6, ftol_abs = 1e-6))
+        list(par = res$solution,
+             fval = res$objective,
+             conv = if (res$status > 0) 0 else res$status,
+             message = res$message
+        )
+}
+
+# focal SNP, chromosome of focal snp, data
+run_gwas <- function(snp, data) {
+        # for mean froh without focal chr
+        chr <- as.numeric(snps_map_sub[snps_map_sub$snp.name == snp, "chromosome"])
+        froh_no_chr <- paste0("froh_no_chr", chr)
+        
+        formula_snp <- as.formula(paste0("survival ~ 1 + sex + twin + age_std + age_std2 + ", 
+                                         froh_no_chr, " + ",
+                                         "pc1 + pc2 + pc3 + pc4 + pc5 + pc6 + pc7 + ",
+                                         #"pc1 + pc2 + pc3 + pc4 +",
+                                         snp, "+ ", paste0("roh_0_", snp), "+",  paste0("roh_2_", snp), "+ (1|birth_year) + (1|sheep_year) + (1|id)"))
+        #snp, "+ ", paste0("roh_", snp), " + (1|sheep_year) + (1|id)"))
+        mod <- glmer(formula = formula_snp,
+                     data = data, family = "binomial",
+                     control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+        out <- broom.mixed::tidy(mod)
+        out
+}
+
+safe_run_gwas <- purrr::safely(run_gwas)
+
+# 
+
+snps_sub <- snps_map_sub$snp.name
+# split into pieces of 50 SNPs 
+num_parts <- round(length(seq_along(snps_sub )) / 50)
+snps_pieces <- split(snps_sub, cut(seq_along(snps_sub), num_parts, labels = FALSE))
+roh_pieces_0 <- map(snps_pieces, function(x) paste0("roh_0_", x)) #### to change here
+roh_pieces_2 <- map(snps_pieces, function(x) paste0("roh_2_", x)) 
+
+annual_survival_gwas_pieces <- 
+        pmap(list(snps_pieces, roh_pieces_0, roh_pieces_2), function(snps_piece, roh_piece_0, roh_piece_2) {
+                annual_survival_gwas %>% dplyr::select(id:pc7, one_of(c(snps_piece, roh_piece_0, roh_piece_2 )))   
+        })
+
+# clean up
+rm(annual_survival, annual_survival_gwas, fitness_data, geno_sub, 
+   roh_lengths, roh_pieces_0, roh_pieces_2, sheep_ped, roh_df)
+
+# set up plan
+plan(multiprocess, workers = 6)
+
+# increase maxSize
+options(future.globals.maxSize = 3000 * 1024^2)
+
+all_out <- future_map2(snps_pieces, annual_survival_gwas_pieces, function(snps, data) {
+        out <- purrr::map(snps, safe_run_gwas, data)
+})
+
+all_out_simple <- purrr::flatten(all_out)
+saveRDS(all_out_simple, file = paste0("output/GWAS_roh_sep_part", "_", part, ".rds"))
+
+
+### testing
+# all_out <- future_map2(snps_pieces[1], annual_survival_gwas_pieces[1], function(snps, data) {
+#         out <- purrr::map(snps[1:3], safe_run_gwas, data)
+# })
+```
+
+
+##Sample mismatches
+
+Investigating sex mismatches between field database and genotype data and duplicate pruning.
+
+```{r sample_mismatch, eval=TRUE, echo=FALSE, include=TRUE}
+library(dplyr)
+#I used three genomic methods of sexing: Z heterozygosity, Autosome:Z coverage and PLINK’s --sex-check function. There are 29/1977 samples where all three methods agreed on a mismatch to the field pedigree.
+SexMismatched <- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+  filter(SexMatch == "no match" &
+         (Het < 0.076 | Het > 0.084) &
+         (RatioAutosomesZ < 1.98 | RatioAutosomesZ > 2.02) &
+         (F < 0.021 | F > 0.029))
+
+#27/29 of sex mismatches are also pedigree mismatches. These birds need investigation.
+#This could be because 1) we have the same sample but have incorrectly sexed the bird in the field database, or 2) we have sampled a different bird for sequencing.
+
+PedigreeMismatch<-sw_family_pedigree_justparents_comparison[["Mismatch"]]
+
+SexMismatched$BirdID<-as.character(SexMismatched$BirdID)
+SexMismatched$PedigreeMismatch <- apply(SexMismatched, 1, function(row) {
+  any(row["BirdID"] %in% unlist(PedigreeMismatch))
+})
+
+#There are 2/29 sex mismatched birds but are pedigree matched. Both birds had no offsping.
+#For the BirdID: 6141, SeqID: 20_TAGGCCTCCT-GTGGTCAATT_L001__all_mapped_rehead.bam, coverage is too low to ascertain sex. INCLUDE AS F?
+#For BirdID: 1668, SeqID: 98-1015_221007_L003__all_mapped_rehead.bam, the bird was only seen twice in 2002 (Unknown) and 2003 (SEEN1). Field database is marked as male by molecular sexing but female by observation. INCLUDE AS F?
+
+
+openxlsx::write.xlsx(SexMismatched, file ="SexMismatched.xlsx", quote=FALSE)
+
+##Genomic relatedness comparison to masterbayes pedigree relatedness
+
+#Convert masterbayes pedigree to relatedness
+
+Rped.old<-CalcRped(masterped, OUT="DF")
+Rel.snp<- read.table("plink2.grm", stringsAsFactors = FALSE)
+Rel.id <- read.table("plink2.grm.id", stringsAsFactors=FALSE)
+Rel.id<-merge(Rel.id, RenameforSequoia, by.x='V2', by.y='SequencedIndividualsBirdIDsExtraDeduplicated.Filepath') %>% select(V1,SequencedIndividualsBirdIDsExtraDeduplicated.BirdID)
+Rel.snp[,1] <- as.character(factor(Rel.snp[,1], labels=Rel.id[,2]))
+Rel.snp[,2] <- as.character(factor(Rel.snp[,2], labels=Rel.id[,2]))
+names(Rel.snp) <- c("IID1", "IID2", "nSNPS", "R.GRM")
+Rel.snp <- Rel.snp[Rel.snp$IID1 != Rel.snp$IID2,] 
+Rel.both <- merge(data.table(Rel.snp[,c(1,2,4)], key=c("IID1", "IID2")),
+                  data.table(Rped.old, key=c("IID1", "IID2")), all.x=TRUE)
+rm(Rel.snp, Rped.old)   # clean up: remove large dataframes
+round(cor(Rel.both[, c("R.GRM","R.ped")],use="pairwise.complete"), 3)
+hexbin::hexbinplot(Rel.both$R.GRM ~ Rel.both$R.ped,
+                   xbins=100, aspect=1, 
+                   xlim=c(0.05,1), ylim=c(-.7, 2.8),
+                   xlab="Pedigree relatedness", ylab="Genomic relatedness",
+                   trans=log10, inv=function(x) 10^x,
+                   colorcut=seq(0,1,length=14), maxcnt=10^6.5,
+                   colramp = function(n) {grDevices::hcl.colors(n, palette='Berlin')})
+
+hb <- hexbin::hexbin(Rel.both$R.GRM ~ Rel.both$R.ped,
+                     xbins=100, xbnds=c(-.05, 2), ybnds=c(-.7, 2.8),
+                     xlab="Pedigree relatedness", ylab="Genomic relatedness")
+hbp <- hexbin::plot(hb,
+                                  trans=log10, inv=function(x) 10^x,
+                                  colorcut=seq(0,1,length=14), maxcnt=10^6.5,
+                                  colramp = function(n) {grDevices::hcl.colors(n, palette='Berlin')}
+                                  )
+hexbin::hexVP.abline(hbp$plot.vp, lm(Rel.both$R.GRM ~ Rel.both$R.ped))
+
+#We can try find which bird it is we incorrectly sampled for sequencing.
+##Change sex of samples to "unknown" in sequoia and re-run parentage assignment. Then see which bird is it's parents and offspring and compare to microsat pedigree.
+lifehistsexunknown<-lifehist
+lifehistsexunknown$Sex[lifehistsexunknown$BirdID %in% SexMismatched$BirdID] <- 3
+
+# Just parentage assignment (Module = "par"). 
+sw_family_sequoia_justparents <- sequoia(GenoM = sw_GenoM_family, LifeHistData = lifehistsexunknown, Module = "par", quiet="verbose", args.AP = list(MaxAgeParent = c(19)))
+
+sw_family_pedigree_justparents_comparison <- PedCompare(masterped[,c("id", "dam", "sire")], sw_family_sequoia_justparents$Pedigree, Plot=TRUE, Symmetrical = TRUE)
+
+# Subset the genomic relatedness pairwise matrix for sex mismatched birds that have genomic relatedness > 0.8 as these birds may have been sequenced twice unintentionally.
+Rel.sexmismatched.both <- Rel.both[(
+  (Rel.both$IID1 %in% SexMismatched$BirdID | Rel.both$IID2 %in% SexMismatched$BirdID) &
+  (Rel.both$R.GRM > 0.8)
+), ]
+
+# Using genomic relatedness >0.75 does not always indicate a duplicate. It is possible that a pair could have a high genomic relatedness (e.g. >0.75) and a low pedigree relatedness (< 0.1) if the pedigree was gappy. For example, two birds  with high relatedness (perhaps full sibs with high inbreeding coefficients) with unknown parents. Birds with unknown parents are treated as founders in a pedigree, regardless of how early/late in the long-term study they were born/hatched. 
+# Therefore, load a duplicate check datafile using PLINK, calling duplicates by --king-table-filter 0.35 for 487,107 SNPs (genotyping rate > 99.9 and MAF > 0.3)
+UnintentionalDuplicates<- read.table("unintentionalduplicates.kin0", stringsAsFactors = FALSE)
+
+# Loop through rows of UnintentionalDuplicates and add BirdID from SequencedIndividualsBirdIDsExtraDeduplicated to V1 where V2 matches Filepath
+# Loop through rows of UnintentionalDuplicates and add BirdID from SequencedIndividualsBirdIDsExtraDeduplicated to V1 where V2 matches Filepath
+#Add BirdIDs
+UnintentionalDuplicates$V1[UnintentionalDuplicates$V2 %in% SequencedIndividualsBirdIDsExtraDeduplicated$Filepath] <- 
+  SequencedIndividualsBirdIDsExtraDeduplicated$BirdID[match(UnintentionalDuplicates$V2, SequencedIndividualsBirdIDsExtraDeduplicated$Filepath)]
+
+UnintentionalDuplicates$V3[UnintentionalDuplicates$V4 %in% SequencedIndividualsBirdIDsExtraDeduplicated$Filepath] <- 
+  SequencedIndividualsBirdIDsExtraDeduplicated$BirdID[match(UnintentionalDuplicates$V4, SequencedIndividualsBirdIDsExtraDeduplicated$Filepath)]
+
+# Rename columns in UnintentionalDuplicates
+colnames(UnintentionalDuplicates) <- c("BirdID1", "Filepath1", "BirdID2", "Filepath2", "NSNPs", "V6", "V7", "Kinship")
+
+# Subset UnintentionalDuplicates to remove rows where Kinship is NA
+UnintentionalDuplicates <- UnintentionalDuplicates[!is.na(UnintentionalDuplicates$Kinship), ]
+
+# Initialize the new column with FALSE (or NA) in UnintentionalDuplicates
+UnintentionalDuplicates$SexMismatchedDuplicate <- FALSE
+
+# Loop through each BirdID in SexMismatched to check if it matches in either BirdID1 or BirdID2 in UnintentionalDuplicates
+for (i in 1:nrow(SexMismatched)) {
+  # Find rows in UnintentionalDuplicates where the BirdID is present in either BirdID1 or BirdID2
+  matching_rows <- UnintentionalDuplicates[UnintentionalDuplicates$BirdID1 == SexMismatched$BirdID[i] |
+                                           UnintentionalDuplicates$BirdID2 == SexMismatched$BirdID[i], ]
+  
+  # If a match is found, set SexMismatchedDuplicate to TRUE for the corresponding rows
+  if (nrow(matching_rows) > 0) {
+    UnintentionalDuplicates$SexMismatchedDuplicate[UnintentionalDuplicates$BirdID1 == SexMismatched$BirdID[i] |
+                                                  UnintentionalDuplicates$BirdID2 == SexMismatched$BirdID[i]] <- TRUE
+  }
+}
+
+
+# Create a new column in SexMismatched to store the Kinship values
+SexMismatched$Kinship <- NA  # Initialize with NA
+
+# Loop through each BirdID in SexMismatched to check if it matches in either BirdID1 or BirdID2 in UnintentionalDuplicates
+for (i in 1:nrow(SexMismatched)) {
+  # Find rows in UnintentionalDuplicates where the BirdID is present in either BirdID1 or BirdID2
+  matched_row <- UnintentionalDuplicates[UnintentionalDuplicates$BirdID1 == SexMismatched$BirdID[i] |
+                                        UnintentionalDuplicates$BirdID2 == SexMismatched$BirdID[i], ]
+  
+  # If a match is found, assign the corresponding Kinship value
+  if (nrow(matched_row) > 0) {
+    SexMismatched$Kinship[i] <- matched_row$Kinship[1]  # Assuming one match per BirdID
+  }
+}
+
+
+
+#Any duplicate samples  in sequoia input SNPs? Yes, 29.
+
+DuplicatesSequoia<-sw_family_sequoia_justparents[["DupGenotype"]]
+
+# Initialize the new column in UnintentionalDuplicates with FALSE (or NA)
+UnintentionalDuplicates$SequoiaDuplicate <- FALSE
+
+UnintentionalDuplicates$BirdID1 <- as.character(UnintentionalDuplicates$BirdID1)
+UnintentionalDuplicates$BirdID2 <- as.character(UnintentionalDuplicates$BirdID2)
+DuplicatesSequoia$ID1 <- as.character(DuplicatesSequoia$ID1)
+DuplicatesSequoia$ID2 <- as.character(DuplicatesSequoia$ID2)
+
+# Perform a left join to merge UnintentionalDuplicates with relevant columns from DuplicatesSequoia
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(DuplicatesSequoia %>%
+              select(ID1, ID2, Mismatch, SnpdBoth, LLR), 
+            by = c("BirdID1" = "ID2", "BirdID2" = "ID1")) %>%
+  mutate(SequoiaDuplicate = ifelse(BirdID1 %in% DuplicatesSequoia$ID1 | 
+                                     BirdID1 %in% DuplicatesSequoia$ID2 |
+                                     BirdID2 %in% DuplicatesSequoia$ID1 | 
+                                     BirdID2 %in% DuplicatesSequoia$ID2, 
+                                   TRUE, FALSE))
+
+
+#Subset for PLINK Kinship > 0.496 as there are no duplicates over this value 
+UnintentionalDuplicates <- subset(UnintentionalDuplicates,UnintentionalDuplicates$Kinship > 0.496)
+
+#There are 29 duplicates as found by sequoia and confirmed with PLINK. Now we need to investigate which is the correct BirdID out of two. 
+#11 can be confirmed using sex
+#329 is in fact 1176
+#478 is in fact 3444
+#4882 is in fact 3643
+#4883 is in fact 1607
+#5542 is in fact 6136
+#5546 is in fact 6175
+#5550 is in fact 4961
+#5585 is in fact 4943
+#6150 is in fact 5786
+#6862 is in fact 6670
+#1276 is in fact 1765
+
+#15 can be confirmed by comparing with masyerbayes mother
+# Perform a left join to look up the mother (dam) from masterped using id
+UnintentionalDuplicates$BirdID1 <- as.character(UnintentionalDuplicates$BirdID1)
+UnintentionalDuplicates$BirdID2 <- as.character(UnintentionalDuplicates$BirdID2)
+Rel.both$IID1<-as.character(Rel.both$IID1)
+Rel.both$IID2<-as.character(Rel.both$IID2)
+
+masterped$id <- as.character(masterped$id)
+
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(masterped %>%
+              select(id, dam), 
+            by = c("BirdID1" = "id")) %>%
+  rename(BirdID1Mum = dam)
+
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(masterped %>%
+              select(id, dam), 
+            by = c("BirdID2" = "id")) %>%
+  rename(BirdID2Mum = dam)
+
+UnintentionalDuplicates$BirdID1Mum <- as.character(UnintentionalDuplicates$BirdID1Mum)
+UnintentionalDuplicates$BirdID2Mum <- as.character(UnintentionalDuplicates$BirdID2Mum)
+
+# Step 1: Perform the joins for BirdID1 and BirdID1Mum
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(Rel.both %>%
+              select(IID1, IID2, R.GRM) %>%
+              rename(R.GRM_1 = R.GRM), 
+            by = c("BirdID1" = "IID1", "BirdID1Mum" = "IID2")) %>%
+  left_join(Rel.both %>%
+              select(IID1, IID2, R.GRM) %>%
+              rename(R.GRM_2 = R.GRM), 
+            by = c("BirdID1" = "IID2", "BirdID1Mum" = "IID1")) %>%
+  mutate(BirdID1MumRel = coalesce(R.GRM_1, R.GRM_2))
+
+# Step 2: Perform the joins for BirdID2 and BirdID2Mum
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(Rel.both %>%
+              select(IID1, IID2, R.GRM) %>%
+              rename(R.GRM_3 = R.GRM), 
+            by = c("BirdID2" = "IID1", "BirdID2Mum" = "IID2")) %>%
+  left_join(Rel.both %>%
+              select(IID1, IID2, R.GRM) %>%
+              rename(R.GRM_4 = R.GRM), 
+            by = c("BirdID2" = "IID2", "BirdID2Mum" = "IID1")) %>%
+  mutate(BirdID2MumRel = coalesce(R.GRM_3, R.GRM_4))
+
+PedigreeComparison<-sw_family_pedigree_justparents_comparison[["MergedPed"]]
+
+# Join for BirdID1 and create BirdID1MumMatch
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(PedigreeComparison %>% select(id, dam.class), 
+            by = c("BirdID1" = "id")) %>%
+  mutate(BirdID1MumMatch = dam.class) %>%
+  select(-dam.class)  # Remove dam.class column if not needed
+
+# Join for BirdID2 and create BirdID2MumMatch
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  left_join(PedigreeComparison %>% select(id, dam.class), 
+            by = c("BirdID2" = "id")) %>%
+  mutate(BirdID2MumMatch = dam.class) %>%
+  select(-dam.class)  # Remove dam.class column if not needed
+
+# Remove the unwanted columns R.GRM_1, R.GRM_2, R.GRM_3, and R.GRM_4 from UnintentionalDuplicates
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  select(-R.GRM_1, -R.GRM_2, -R.GRM_3, -R.GRM_4)
+
+#3 can be confirmed comparing with offspring.
+#1218/1182. 1182 is probably 1218 because 1218 matches with three different offspring in masterbayes and sequoia
+#498/1303. 1303 is probably 498 because 498 has 0.5 relatedness with one offspring (but not the other).
+#864/3871. 3871 is probably 864 because 864 matches with offspring.
+
+
+
+#Create a BirdIDConsensus column for what the BirdID of the duplicate pair should be
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  mutate(BirdIDConsensus = case_when(
+    BirdID1 %in% SexMismatched$BirdID ~ as.character(BirdID2),
+    BirdID2 %in% SexMismatched$BirdID ~ as.character(BirdID1),
+    BirdID1MumMatch == "Match" ~ as.character(BirdID1),
+    BirdID2MumMatch == "Match" ~ as.character(BirdID2),
+    BirdID1MumRel > 0.5 ~ as.character(BirdID1),
+    BirdID2MumRel > 0.5 ~ as.character(BirdID2),
+    BirdID1 == 1218 | BirdID2 == 1218 ~ "1218",
+    BirdID1 == 498  | BirdID2 == 498  ~ "498",
+    BirdID1 == 864  | BirdID2 == 864  ~ "864",
+    TRUE ~ NA_character_
+  ))
+
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  mutate(BirdIDMissing = case_when(
+    BirdID1 == BirdIDConsensus ~ BirdID2,  # If BirdID1 equals BirdIDConsensus, set BirdIDMissing to BirdID2
+    BirdID2 == BirdIDConsensus ~ BirdID1,  # If BirdID2 equals BirdIDConsensus, set BirdIDMissing to BirdID1
+    TRUE ~ NA_character_                       # If neither condition is met, set BirdIDMissing to NA (numeric NA)
+  ))
+
+openxlsx::write.xlsx(UnintentionalDuplicates, file ="UnintentionalDuplicates.xlsx", quote=FALSE)
+getwd()
+
+#Re-run sequoia removing the duplicates and only picking the higher coverage sample
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  mutate(
+    BirdID1Coverage = case_when(
+      BirdID1 %in% SequencedIndividualsBirdIDsExtraDeduplicated$BirdID ~ 
+        SequencedIndividualsBirdIDsExtraDeduplicated$Coverage[match(BirdID1, SequencedIndividualsBirdIDsExtraDeduplicated$BirdID)],
+      TRUE ~ NA_real_  # If no match, set to NA
+    ),
+    BirdID2Coverage = case_when(
+      BirdID2 %in% SequencedIndividualsBirdIDsExtraDeduplicated$BirdID ~ 
+        SequencedIndividualsBirdIDsExtraDeduplicated$Coverage[match(BirdID2, SequencedIndividualsBirdIDsExtraDeduplicated$BirdID)],
+      TRUE ~ NA_real_  # If no match, set to NA
+    )
+  )
+
+UnintentionalDuplicates <- UnintentionalDuplicates %>%
+  mutate(
+    BirdIDtoExclude = case_when(
+      BirdID1Coverage > BirdID2Coverage ~ BirdID2,  # If BirdID1Coverage is greater, set BirdIDtoExclude to BirdID2
+      BirdID1Coverage < BirdID2Coverage ~ BirdID1,  # If BirdID1Coverage is less, set BirdIDtoExclude to BirdID1
+      TRUE ~ NA_character_  # If both are equal or other cases, set BirdIDtoExclude to NA
+    )
+  )
+
+
+# Ensure BirdIDtoExclude is a character vector for comparison
+exclude_values <- as.character(UnintentionalDuplicates$BirdIDtoExclude)
+
+# Check if sw_GenoM_family has row names
+if (!is.null(rownames(sw_GenoM_family))) {
+  
+  # Get the row names of sw_GenoM_family
+  row_names <- rownames(sw_GenoM_family)
+  
+  # Find the values in row_names that are in exclude_values
+  rows_to_exclude <- row_names %in% exclude_values
+  
+  # Exclude the rows from sw_GenoM_family where the row names match exclude_values
+  sw_GenoM_family_filtered <- sw_GenoM_family[!rows_to_exclude, , drop = FALSE]
+  
+  print("Rows have been filtered successfully.")
+} else {
+  print("sw_GenoM_family does not have row names.")
+}
+
+sw_dedup_family_sequoia_justparents <- sequoia(GenoM = sw_GenoM_family_filtered, LifeHistData = lifehist, Module = "par", quiet="verbose", args.AP = list(MaxAgeParent = c(19)))
+
+# A 95.1% match to the masterbayes pedigree (1% increase after deduplicating)
+sw_dedup_family_pedigree_justparents_comparison <- PedCompare(masterped[,c("id", "dam", "sire")], sw_dedup_family_sequoia_justparents$Pedigree, Plot=TRUE, Symmetrical = TRUE)
+
+SummarySeq(SeqList = sw_family_sequoia_justparents)
+
+#Why are there duplicates?
+view(Identifiers)
+
+Identifiers$BirdID<-as.character(SheffieldSubmissions$BirdID)
+
+#It looks like Plate 53 is responsible for 12 duplicates!
+UnintentionalDuplicatesMoreInfo<-UnintentionalDuplicates
+for (i in 1:nrow(UnintentionalDuplicatesMoreInfo)) {
+  
+  # Match BirdID1 with Identifiers$BirdID and return Identifiers$Plate in BirdID1Plate
+  match1 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID1[i])
+  if (length(match1) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID1Plate[i] <- Identifiers$Plate[match1]
+  }
+  
+  # Match BirdID2 with Identifiers$BirdID and return Identifiers$Plate in BirdID2Plate
+  match2 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID2[i])
+  if (length(match2) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID2Plate[i] <- Identifiers$Plate[match2]
+  }
+}
+
+for (i in 1:nrow(UnintentionalDuplicatesMoreInfo)) {
+  
+  # Match BirdID1 with Identifiers$BirdID and return Identifiers$Plate in BirdID1Plate
+  match1 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID1[i])
+  if (length(match1) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID1BloodID[i] <- Identifiers$BloodID[match1]
+  }
+  
+  # Match BirdID2 with Identifiers$BirdID and return Identifiers$Plate in BirdID2Plate
+  match2 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID2[i])
+  if (length(match2) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID2BloodID[i] <- Identifiers$BloodID[match2]
+  }
+}
+
+for (i in 1:nrow(UnintentionalDuplicatesMoreInfo)) {
+  
+  # Match BirdID1 with Identifiers$BirdID and return Identifiers$Plate in BirdID1Plate
+  match1 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID1[i])
+  if (length(match1) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID1BloodTubeNumber[i] <- Identifiers$BTN[match1]
+  }
+  
+  # Match BirdID2 with Identifiers$BirdID and return Identifiers$Plate in BirdID2Plate
+  match2 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID2[i])
+  if (length(match2) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID2BloodTubeNumber[i] <- Identifiers$BTN[match2]
+  }
+}
+
+for (i in 1:nrow(UnintentionalDuplicatesMoreInfo)) {
+  
+  # Match BirdID1 with Identifiers$BirdID and return Identifiers$Plate in BirdID1Plate
+  match1 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID1[i])
+  if (length(match1) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID1Box[i] <- Identifiers$Box[match1]
+  }
+  
+  # Match BirdID2 with Identifiers$BirdID and return Identifiers$Plate in BirdID2Plate
+  match2 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID2[i])
+  if (length(match2) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID2Box[i] <- Identifiers$Box[match2]
+  }
+}
+
+for (i in 1:nrow(UnintentionalDuplicatesMoreInfo)) {
+  
+  # Match BirdID1 with Identifiers$BirdID and return Identifiers$Plate in BirdID1Plate
+  match1 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID1[i])
+  if (length(match1) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID1Plate_number[i] <- Identifiers$`Plate Number`[match1]
+  }
+  
+  # Match BirdID2 with Identifiers$BirdID and return Identifiers$Plate in BirdID2Plate
+  match2 <- which(Identifiers$BirdID == UnintentionalDuplicatesMoreInfo$BirdID2[i])
+  if (length(match2) > 0) {
+    UnintentionalDuplicatesMoreInfo$BirdID2Plate_number[i] <- Identifiers$`Plate Number`[match2]
+  }
+}
+
+#There are 50 samples in Plate 53
+sum(Identifiers$Plate == 53, na.rm = TRUE)
+#Is Plate 53 also implicated in the sex mismatches? Yes, 12/26 sex-mismatched samples are from Plate 53.
+for (i in 1:nrow(SexMismatched)) {
+  
+  match <- which(Identifiers$BirdID == SexMismatched$BirdID[i])
+  
+  if (length(match) > 0) {
+    SexMismatched$PlateSheffield[i] <- Identifiers$Plate[match]
+  }
+}
+
+#Of the sequoia mismatches, how many are from Plate 53? 42/156!
+# Assuming PedigreeMismatch and Identifiers are data frames
+for (i in 1:nrow(PedigreeMismatch)) {
+  
+  # Match PedigreeMismatch$id with Identifiers$BirdID
+  match_id <- which(Identifiers$BirdID == PedigreeMismatch$id[i])
+  if (length(match_id) == 1) {  # Ensure exactly one match
+    PedigreeMismatch$idPlate[i] <- Identifiers$Plate[match_id]
+  } else {
+    PedigreeMismatch$idPlate[i] <- NA  # If no match or multiple matches, assign NA
+  }
+  
+  # Match PedigreeMismatch$dam.1 with Identifiers$BirdID
+  match_dam <- which(Identifiers$BirdID == PedigreeMismatch$dam.1[i])
+  if (length(match_dam) == 1) {  # Ensure exactly one match
+    PedigreeMismatch$dam.1Plate[i] <- Identifiers$Plate[match_dam]
+  } else {
+    PedigreeMismatch$dam.1Plate[i] <- NA  # If no match or multiple matches, assign NA
+  }
+  
+  # Match PedigreeMismatch$sire.1 with Identifiers$BirdID
+  match_sire <- which(Identifiers$BirdID == PedigreeMismatch$sire.1[i])
+  if (length(match_sire) == 1) {  # Ensure exactly one match
+    PedigreeMismatch$sire.1Plate[i] <- Identifiers$Plate[match_sire]
+  } else {
+    PedigreeMismatch$sire.1Plate[i] <- NA  # If no match or multiple matches, assign NA
+  }
+}
+count <- sum(
+  grepl("53", PedigreeMismatch$idPlate) |
+  grepl("53", PedigreeMismatch$dam.1Plate) |
+  grepl("53", PedigreeMismatch$sire.1Plate)
+)
+count
+
+#Explore how Plate53 looks visually. I don't see any pattern here.
+IdentifiersPlate53<-subset(Identifiers, Identifiers$Plate == 53)
+# Assuming IdentifiersPlate53 is your data frame with columns BirdID and well
+
+# Create an empty matrix to store the BirdID values
+result_matrix <- matrix(NA, nrow = 12, ncol = 8)
+
+# Set the row and column names (A to H for columns, 1 to 12 for rows)
+colnames(result_matrix) <- LETTERS[1:8]
+rownames(result_matrix) <- 1:12
+
+# Loop through each row in IdentifiersPlate53 to assign BirdID to the appropriate place in the matrix
+for (i in 1:nrow(IdentifiersPlate53)) {
+  # Extract the well location (e.g., "A1", "B2")
+  well <- IdentifiersPlate53$well[i]
+  
+  # Extract column letter (A to H)
+  col <- substr(well, 1, 1)
+  
+  # Extract row number (1 to 12)
+  row <- as.integer(substr(well, 2, 2))
+  
+  # If the row number is a two-digit number (e.g., "A10"), adjust the extraction for the row
+  if (nchar(well) == 3) {
+    row <- as.integer(substr(well, 2, 3))
+  }
+  
+  # Convert column letter to column number (A = 1, B = 2, ..., H = 8)
+  col_num <- which(LETTERS[1:8] == col)
+  
+  # Assign the BirdID to the appropriate place in the result matrix
+  result_matrix[row, col_num] <- IdentifiersPlate53$BirdID[i]
+}
+
+# Print the result matrix
+result_matrix
+
+
+#Which sex mismatched samples remain to be resolved?
+SexMismatchedToResolve <- SexMismatched %>%
+  mutate(DuplicateSample = BirdID %in% c(UnintentionalDuplicates$BirdID1, UnintentionalDuplicates$BirdID2))
+
+#11/29 can be resolved as duplicates
+#3/29 genomic sex can't reliably be estimated as coverage < 0.32, include as microsatellite sex?
+#7/29 I think can be resolved by investigating relationships with close relatives:
+  #3088 (M, but geno F) never had offspring (parents only are mismatched)- check how it was sexed in database. Has 2 blood samples. Mother is #1716 and father is #1774, which is the masterbayes parents of 5145. SWAP WITH 5145.
+
+  #5145 (F, but geno M) never had offspring (parents only are mismatched)- check how it was sexed in database. Has 2 blood samples. Mother is #1429 and father is #1886, which is the masterbayes parents of 3088. SWAP WITH 3088.
+
+  #6156 (M, but geno F) is  #6160. SWAP.
+
+  #6160 (M, but geno F) is  #6156. SWAP.
+
+  #6166 mismatched parents and is replaced in sequoia by #5538 as father to #6766 and #6862. Recorded as BrM 5 years in a row from 2015-2019. Has 5 blood samples. This is probably the real #6862 as #5538 is also father to #6670 who is also #6862. SWAP?
+
+  #774 (F, but geno M) never has offspring according to sequoia, and gets replaced by #329 (#1176) as father to #1176. Has 2 blood samples. BrF from 1996-2002. This is probably the real #329? SWAP?
+
+#8/29 I am not sure how to treat:
+
+  #1229 (M, but geno F) mother is #825 and then inbreeds with #825 to have  an offspring #1537.
+
+  #1435 (M, but geno F) never had offspring according to sequoia, but had three offspring according to masterbayes. Has 4 blood samples and BrM from 2002-2004. Father is #1181. #1435 is related to 870, 1181 and 1052 by > 0.4. 
+
+  #1676 (M, but geno F) never had offspring according to sequoia, but had one offspring according to masterbayes and gets replaced as father by #1695 (who is BrM in neighboring territory 46 vs 45). Has 1 blood sample as ABX. Mother is #1390. SEX CONFLICT IN DATABASE, INCLUDE AS F?
+
+  #5554 (M, but geno F) mismatched parents and also is a sequoia mother to #5773 and #6034, both times replacing #5111. Has 3 blood samples. Mother is #4863 and father is #1762. Related to 5634, 1884, 511, 5553, 1762 > 0.4. Gets assigned female in pre-deduplicated sequoia pedigree and gets assigned male in deduplicated sequoia pedigree.
+
+  #5555 (M, but geno F) never had offspring (parents only are mismatched)- check how it was sexed in database. Has 1 blood sample as FL. Mother is #3500 and father is #1762. #5554 and #5555 are both males so unlikely to have been swapped. Related to 3500 and 1762 > 0.4. 5555 is 5512, 5512 is 6151, 6151 is 6178, 6178 is 6176 (6176 is a missing sample)?
+
+  #5827 (F, but geno M) never had offspring (mother only is mismatched)- check how it was sexed in database. Has 1 blood sample as FL. Mother is #3086. Related to 3086, 5339, 5598 > 0.35.
+
+  #6049 (M, but geno F) never had offspring (parents only are mismatched)- check how it was sexed in database. Has 3 blood samples. Father is #1750.
+
+  #6149 (M, but geno F) never had offspring (parents only are mismatched)- check how it was sexed in database. Has 3 blood samples. Mother is #1707 and father is #5822.
+
+
+# Subset the SexMismatched data frame where DuplicateSample is FALSE
+SexMismatched <- SexMismatched %>%
+  filter(DuplicateSample == FALSE)
+
+SexMismatched <- SexMismatched %>%
+  mutate(BirdIDConsensus = case_when(
+    BirdID == 774  ~ 329,   # If BirdID is 774, set BirdIDConsensus to 329
+    BirdID == 1617 ~ 1617,  # If BirdID is 3088, set BirdIDConsensus to 5145
+    BirdID == 3088 ~ 5145,  # If BirdID is 3088, set BirdIDConsensus to 5145
+    BirdID == 5145 ~ 3088,  # If BirdID is 3088, set BirdIDConsensus to 5145
+    BirdID == 5833 ~ 5833,  # If BirdID is 5833, set BirdIDConsensus to 5833
+    BirdID == 6156 ~ 6160,  # If BirdID is 6156, set BirdIDConsensus to 6160
+    BirdID == 6160 ~ 6156,  # If BirdID is 6160, set BirdIDConsensus to 6156
+    BirdID == 6166 ~ 6862,  # If BirdID is 6166, set BirdIDConsensus to 6862
+    BirdID == 6141 ~ 6141,  # If BirdID is 6141, set BirdIDConsensus to 6141
+    TRUE ~ NA_real_         # If no condition is met, set BirdIDConsensus to NA (numeric NA)
+  ))
+
+# Where did the SexMismatched samples come from?
+# Sex mismatched seem to be evenly distributed along timescale ordered by BloodID
+ggplot(SequencedIndividualsBirdIDsExtraDeduplicated %>% filter(Coverage > 0.32), 
+       aes(x = ID, y = SexMatch)) +
+  geom_point(na.rm = TRUE) +  # Scatter plot, ignoring NA values
+  labs(x = "BloodID", y = "SexMatch", title = "BloodID vs SexMatch (Coverage > 0.32)") +
+  theme_minimal()
+
+
+Seychelles_warbler_traits<-SequencedIndividualsBirdIDsExtraDeduplicated
+
+```
+
+
+
