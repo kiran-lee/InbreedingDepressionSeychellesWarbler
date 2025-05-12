@@ -1,10 +1,10 @@
 # InbreedingDepressionSeychellesWarbler
  
-These are the data and scripts used to investigate inbreeding depression post-bottlenek in Seychelles warblers using 1,936 low coverage, whole-genome sequences that have been imputed to recover missing genotypes and verified for sample identity as in https://github.com/kiran-lee/SeychellesWarblerGenomicToolkit. 
+These are the data and scripts used to investigate inbreeding depression following a recent, severe bottleneck in Seychelles warblers using 1,936 low coverage, whole-genome sequences that have been imputed to recover missing genotypes and verified for sample identity as in https://github.com/kiran-lee/SeychellesWarblerGenomicToolkit. 
 
-![Cousin 1900s](Other/File-photo-Cousins-coconut-plantations-were-begun-in-the-early-1900s-thegem-blog-default.jpg)
+![Cousin as coconut plantation, 1900s](Other/File-photo-Cousins-coconut-plantations-were-begun-in-the-early-1900s-thegem-blog-default.jpg)
+*<small>Cousin as coconut plantation, 1900s. Photo from Nature Seychelles.</small>*
 
-Photo from Nature Seychelles.
 
 We trace the demographic history, showing a drastic bottleneck to Ne = 12.6, 9 generations ago.
 We use model-based approach to calculate individual FROH using RZooRoH and investigate how this covaries with key fitness traits:  annual survival, annual fecundity, lifespan and lifetime fecundity, including relevant variables showing severe inbreeding depression.
