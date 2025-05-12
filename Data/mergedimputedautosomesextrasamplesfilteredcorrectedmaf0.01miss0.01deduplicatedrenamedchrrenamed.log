@@ -1,0 +1,44 @@
+PLINK v1.90b6.21 64-bit (19 Oct 2020)
+Options in effect:
+  --allow-extra-chr
+  --chr-set 29 no-mt
+  --const-fid
+  --make-bed
+  --out mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed
+  --set-missing-var-ids @:#
+  --vcf mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed.vcf.gz
+
+Hostname: bessemer-node001.shef.ac.uk
+Working directory: /mnt/fastdata/bop21kgl/ROH
+Start time: Wed Apr 30 16:36:58 2025
+
+Random number seed: 1746027418
+191856 MB RAM detected; reserving 95928 MB for main workspace.
+--vcf:
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed-temporary.bed
++
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed-temporary.bim
++
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed-temporary.fam
+written.
+1890803 variants loaded from .bim file.
+1890803 missing IDs set.
+1935 samples (0 males, 0 females, 1935 ambiguous) loaded from .fam.
+Ambiguous sex IDs written to
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed.nosex
+.
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 1935 founders and 0 nonfounders present.
+Calculating allele frequencies... done.
+Total genotyping rate is 0.99756.
+1890803 variants and 1935 samples pass filters and QC.
+Note: No phenotypes present.
+--make-bed to
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed.bed
++
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed.bim
++
+mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed.fam
+... done.
+
+End time: Wed Apr 30 16:39:35 2025

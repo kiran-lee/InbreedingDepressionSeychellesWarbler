@@ -1,0 +1,3743 @@
+## Ch.2 ROH dataframe
+
+Create a dataframe linking individuals to FROH and other variables.
+
+```{r roh, eval=TRUE, warning=FALSE, include=TRUE }
+library(GGally)
+library(FnR)
+
+#Reload some important files from chapter 1
+SeychellesWarblerTraitsCorrected <- readxl::read_excel("/Users/kiranlee/Documents/GitHub/InProgressGenomicsInbreedingSeychellesWarblers/Data/SeychellesWarblerTraitsCorrected.xlsx")
+
+SequoiaMasterbayesPedigree<-read_xlsx("SequoiaMasterbayesPedigree.xlsx")
+
+SequoiaPedigree<-read_xlsx("PedigreeCorrected.xlsx")
+
+BirdsPerYear <- read_excel("BirdsPerYear.xlsx")
+BirdsPerYear$BirdID <- as.character(BirdsPerYear$BirdID)
+BirdsPerYear$Year <- BirdsPerYear$PeriodYear
+
+# Define status hierarchy
+status_priority <- c("BrF", "BrM", "H", "AB", "ABX", "SEEN2", "SEEN1", "OFL", "FL", "CH", "FLOAT", "NSA", "U", "EGG", "TBRF", "TBRM", "NS")
+
+# Create priority column
+BirdsPerYear <- BirdsPerYear %>%
+  mutate(StatusPriority = match(Status, status_priority))
+
+# Now filter:
+BirdsPerYear_filtered <- BirdsPerYear %>%
+  group_by(BirdID, FieldPeriodID) %>%  # Group by BirdID and FieldPeriodID
+  slice_min(order_by = StatusPriority, with_ties = FALSE) %>%  # Keep best Status within each BirdID-FieldPeriodID group
+  ungroup() %>%
+  select(-StatusPriority)  # Remove helper column
+
+
+Offspring <- read_csv("Offspring27032023.csv",col_types = cols(BirthDate = col_date(format = "%d/%m/%Y")))
+Offspring2024 <- read_csv("Offspring2024.csv",col_types = cols(BirthDate = col_date(format = "%d/%m/%Y")))
+
+BirthDate <- read_csv("BirthDate27032023.csv", col_types = cols(BirthDate = col_date(format = "%d/%m/%Y"))) #In query table, this is BirdID
+BirthDate <- BirthDate %>% 
+  mutate(BirthYear = format(BirthDate, "%Y")) %>%
+  mutate(BirthYear = as.numeric(BirthYear))
+
+##### Rule-based FROH data (PLINK) #####
+#PLINK flags
+#  --allow-extra-chr
+#  --bfile mergedimputedautosomesextrasamplesfilteredmaf0.01miss0.01deduplicatedrenamecorrectedchromosomesrenamed
+#  --chr-set 29
+#  --double-id
+#  --geno 0.01
+#  --homozyg-density 200
+#  --homozyg-gap 300
+#  --homozyg-het 2
+#  --homozyg-kb 330
+#  --homozyg-snp 50
+#  --homozyg-window-het 2
+#  --homozyg-window-missing 4
+#  --homozyg-window-snp 50
+#  --maf 0.01
+#  --out 330kbfilteredrenamed
+
+file_path <-  "/Users/kiranlee/Documents/GitHub/InProgressGenomicsInbreedingSeychellesWarblers/Data/330kbfilteredrenamed.hom"
+roh_lengths <- fread(file_path)
+hist(roh_lengths$KB, breaks = 1000, xlim = c(0,10000))
+
+# Chromosome lengths
+chr_data <- read_delim("/Users/kiranlee/Documents/GitHub/InProgressGenomicsInbreedingSeychellesWarblers/Data/chromosome_info_31.txt", delim = "\t") %>% 
+  rename(size_BP = Length,
+         CHR = Part) %>% 
+  mutate(size_KB = size_BP / 1000)
+
+autosomal_genome_size <- chr_data %>% 
+                          .[2:30, ] %>% 
+                          summarise(sum_KB = sum(size_KB)) %>% 
+                          as.numeric()
+
+# Define ROH length classes. PLINK's calculation is actually entirely post-bottleneck. Let's say you want 50 generations back in time. Then 100/(2*50generations)cM/ 3cM/Mb)=0.33Mb= 330Kb. So it is not fair to assume the classes can correspond to pre or post bottleneck.
+
+calc_froh_classes <- function(roh_crit, roh_lengths) {
+  
+  roh_lengths %>%
+    dplyr::group_by(IID) %>%
+    dplyr::filter(
+      dplyr::case_when(
+        roh_crit == "all"    ~ KB > 0
+      )
+    ) %>%
+    dplyr::summarise(KBSUM = sum(KB, na.rm = TRUE)) %>%
+    dplyr::mutate(FROH = KBSUM / autosomal_genome_size) %>%
+    dplyr::select(IID, FROH) %>%
+    dplyr::rename(ID = IID, !!paste0("FROH_", roh_crit) := FROH)
+}
+
+# Proportion of ROH length classes in each genome. Individuals which do not have long ROH have 0 for this class.
+ROH_classes <- c( "all")
+froh <- purrr::map(ROH_classes, calc_froh_classes, roh_lengths) %>% 
+        purrr::reduce(left_join, by = "ID") %>% 
+        replace_na(list(FROH_all = 0))
+froh$ID <- as.character(froh$ID)
+
+SeychellesWarblerTraitsCorrected<- SeychellesWarblerTraitsCorrected %>%
+  left_join(froh, by = c("BirdID"="ID"))
+
+##### Model-based FROH data (RZooRoH) #####
+hbdseg_csv_path <- "combined_all_hbdseg_data_canonically_renamed.csv"
+frzooroh <- read.csv("combined_FRZooRoH9.csv", header = FALSE)
+frzooroh <- frzooroh[!grepl("/fastdata/bop21kgl/RawData/LIMSMERGED/", frzooroh[[1]]), ]
+frzooroh <- frzooroh %>%
+  rename(
+    BirdID = V1,
+    FROH_2.5 = V2,
+    FROH_5 = V3,
+    FROH_25 = V4,
+    FROH_50 = V5,
+    FROH_250 = V6,
+    FROH_500 = V7,
+    FROH_2500 = V8,
+    FROH_7500 = V9
+  )
+
+
+#SequencedIndividualsBirdIDsExtraDeduplicated<- SequencedIndividualsBirdIDsExtraDeduplicated %>%
+#  left_join(frzooroh, by = c("Filepath"="SampleID")) maybe delete if i can tidy up script to run off SeychellesWarblerTraitsCorrected
+SeychellesWarblerTraitsCorrected<-SeychellesWarblerTraitsCorrected %>%
+  left_join(frzooroh, by = c("BirdID"="BirdID"))
+
+#Looks like a lot of inbreeding is post bottleneck, since 50 generations ago
+generation_levels <- c("2.5", "5", "25", "50", "250", "500", "1250", "Non-HBD")
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+  mutate(
+    ΔFROH_5 = FROH_5 - FROH_2.5,
+    ΔFROH_25 = FROH_25 - FROH_5,
+    ΔFROH_50 = FROH_50 - FROH_25,
+    ΔFROH_250 = FROH_250 - FROH_50,
+    ΔFROH_500 = FROH_500 - FROH_250,
+    ΔFROH_2500 = FROH_2500 - FROH_500,
+    ΔFROH_7500 = FROH_7500 - FROH_2500
+  )
+plot_data <- SeychellesWarblerTraitsCorrected %>%
+  select(FROH_2.5, ΔFROH_5, ΔFROH_25, ΔFROH_50, ΔFROH_250, ΔFROH_500, ΔFROH_2500, ΔFROH_7500) %>%
+  rename(
+    `2.5` = FROH_2.5,
+    `5`   = ΔFROH_5,
+    `25`  = ΔFROH_25,
+    `50`  = ΔFROH_50,
+    `250` = ΔFROH_250,
+    `500` = ΔFROH_500,
+    `2500`= ΔFROH_2500,
+    `Non-HBD`= ΔFROH_7500
+  ) %>%
+  pivot_longer(cols = everything(), names_to = "Generation", values_to = "F") %>%
+  mutate(Generation = factor(Generation, levels = generation_levels))
+
+ggplot(plot_data, aes(x = Generation, y = F)) +
+  geom_boxplot(fill = "skyblue") +
+  labs(
+    x = "Generations ago",
+    y = "FROH (Model-based, FRZooRoH)"  ) +
+  theme_classic()+
+  theme(
+    text = element_text(size = 20),            # Default text size
+    axis.title.x = element_text(size = 20, margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, margin = margin(r = 15)),
+    axis.text = element_text(size = 16),        # Axis tick labels
+    plot.title = element_text(size = 32, face = "bold"),  # Title
+    legend.text = element_text(size = 16),      # Legend text
+    legend.title = element_text(size = 20),
+    legend.position = "bottom"
+)
+
+#Compare FROH estimates
+PLINKvsRZOOROH <- SeychellesWarblerTraitsCorrected %>%
+  filter(!is.na(FROH_50), !is.na(FROH_50)) %>%
+  mutate(LowCov = Coverage < 0.1,
+         Label   = ifelse(LowCov,
+                          paste0(BirdID,",", round(Coverage, 3)),
+                          NA))
+
+ggplot(PLINKvsRZOOROH, aes(x = FROH_50, y = FROH_all)) +
+  geom_point(aes(colour = LowCov), alpha = 0.6) +
+  geom_text_repel(aes(label = Label, colour = LowCov),
+                  segment.color = "black",
+                  size = 4, max.overlaps = Inf, na.rm = TRUE) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey40") +
+  scale_colour_manual(values = c(`TRUE` = "firebrick", `FALSE` = "black"), guide = "none") +
+  labs(x = "FROH RZooRoH",
+       y = "FROH PLINK") + 
+  theme_classic() +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(size = 20, margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, margin = margin(r = 15)),
+    axis.text = element_text(size = 16))
+
+
+froh_data <- SeychellesWarblerTraitsCorrected %>%
+  select(FROH_2.5, FROH_5, FROH_25, FROH_50, FROH_250, FROH_500, FROH_2500, FROH_7500)
+ggpairs(froh_data,
+        upper = list(continuous = wrap("cor", size = 3)),
+        lower = list(continuous = wrap("smooth", alpha = 0.3)),
+        diag = list(continuous = "densityDiag")) +
+  theme_bw()
+
+#Add in variables important in explaining fitness traits
+
+# Data Preparation
+
+# Ensure correct types in BirdIDSexYear
+BirdsPerYear_filtered <- BirdsPerYear_filtered %>%
+  mutate(FieldPeriodID = as.numeric(FieldPeriodID),
+         Year = as.numeric(Year),
+         BirdID = as.character(BirdID))
+
+# Calculate DeathYear in the main traits dataframe
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+  mutate(
+    BirthYear_num = suppressWarnings(as.numeric(BirthYear)),
+    Lifespan_num = suppressWarnings(as.numeric(Lifespan)),
+    DeathYear_calculated = ifelse(!is.na(BirthYear_num) & !is.na(Lifespan_num),
+                                  BirthYear_num + Lifespan_num,
+                                  NA_real_)
+  ) %>%
+  mutate(DeathYear = DeathYear_calculated) %>%
+  select(-BirthYear_num, -Lifespan_num, -DeathYear_calculated) %>%
+  mutate(BirdID = as.character(BirdID), # Ensure BirdID is character for joins
+         DeathYear = as.numeric(DeathYear))
+
+# Calculate Annual Death Rate
+
+# 1. Get Unique Bird Counts per Field Period
+field_period_counts <- BirdsPerYear_filtered %>%
+  group_by(FieldPeriodID) %>%
+  summarise(unique_birds = n_distinct(BirdID), .groups = 'drop') %>%
+  arrange(FieldPeriodID)
+
+# 2. Map Field Periods to Years
+fp_year_mapping <- BirdsPerYear_filtered %>%
+  select(FieldPeriodID, Year) %>%
+  distinct()
+
+# 3. Filter out counts from excluded field periods
+# Exclude field periods with incomplete census data
+excluded_field_periods <- c(1, 2, 29, 33, 44, 74, 110)
+valid_field_period_counts <- field_period_counts %>%
+  filter(!(FieldPeriodID %in% excluded_field_periods))
+
+# 4. Calculate Mean Unique Birds per Year using only VALID field periods
+annual_mean_birds <- valid_field_period_counts %>%
+  inner_join(fp_year_mapping, by = "FieldPeriodID") %>%
+  group_by(Year) %>%
+  summarise(MeanUniqueBirds = mean(unique_birds, na.rm = TRUE), .groups = 'drop') %>%
+  mutate(MeanUniqueBirds = ifelse(is.nan(MeanUniqueBirds), NA_real_, MeanUniqueBirds)) %>%
+  arrange(Year)
+
+# 5. Calculate Annual Death Rate based on Year-to-Year Change in Mean Birds
+annual_death_rate_new <- annual_mean_birds %>%
+  mutate(MeanUniqueBirds_NextYear = lead(MeanUniqueBirds, order_by = Year)) %>%
+  mutate(
+    AnnualDeathRate = ifelse(
+      !is.na(MeanUniqueBirds_NextYear) & !is.na(MeanUniqueBirds) & MeanUniqueBirds > 0,
+      (MeanUniqueBirds - MeanUniqueBirds_NextYear) / MeanUniqueBirds,
+      NA_real_
+    )
+  ) %>%
+  select(Year, AnnualDeathRate) # Final table linking Year to the NEW rate
+
+# --- Verification of New Rate ---
+print(head(annual_death_rate_new))
+summary(annual_death_rate_new)
+
+
+# --- Update SeychellesWarblerTraitsCorrected (Wide Format) ---
+
+# 1. Calculate Mean Lifetime Death Rate using the NEW annual rates
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+  rowwise() %>%
+  mutate(
+    MeanLifetimeDeathRate = {
+      start_year <- BirthYear
+      end_year <- DeathYear
+      mean_rate <- NA_real_
+      if (!is.na(start_year) && !is.na(end_year) && start_year <= end_year) {
+        years_lived <- seq(from = start_year, to = end_year, by = 1)
+        relevant_rates <- annual_death_rate_new %>%
+          filter(Year %in% years_lived)
+        if (nrow(relevant_rates) > 0) {
+            calculated_mean <- mean(relevant_rates$AnnualDeathRate, na.rm = TRUE)
+            if (!is.nan(calculated_mean)) {
+              mean_rate <- calculated_mean
+            }
+        }
+      }
+      mean_rate
+    }
+  ) %>%
+  ungroup()
+
+# 2. Add other columns (MaternalAge, Parent IDs)
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+  left_join(SequoiaMasterbayesPedigree %>%
+              select(id, MaternalAge), by = c("BirdID" = "id")) %>%
+  left_join(SequoiaMasterbayesPedigree %>% select(id, dam, sire), by = c("BirdID" = "id")) %>%
+  rename(DamID = dam, SireID = sire)
+
+# 3. Add death rate in the year the individual died
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+  left_join(
+    annual_death_rate_new %>% rename(DeathYear = Year, DeathYearDeathRate = AnnualDeathRate),
+    by = "DeathYear"
+  )
+
+# 4. Add death rate the year the individual was born
+# Join the birth year death rate into SeychellesWarblerTraitsCorrected
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+  left_join(
+    annual_death_rate_new %>%
+      rename(BirthYear = Year, BirthYearDeathRate = AnnualDeathRate),
+    by = "BirthYear"
+  )
+
+# Create Annual Survival Dataframe (Long Format)
+
+# 1. Prepare core survival structure (BirdID, Year, Age, Survived)
+df_survival_core <- SeychellesWarblerTraitsCorrected %>%
+  select(BirdID, BirthYear, DeathYear) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  filter(!is.na(BirthYear), !is.na(DeathYear), DeathYear >= BirthYear) %>%
+  mutate(Year = map2(BirthYear, DeathYear, seq), BirdID = as.character(BirdID)) %>%
+  unnest(Year) %>%
+  mutate(Age = Year - BirthYear) %>%
+  group_by(BirdID) %>%
+  mutate(
+    Survived = ifelse(Year < DeathYear, 1, 0) # alive before death year = 1, death year = 0
+  ) %>%
+  ungroup() %>%
+  select(BirdID, Year, Age, Survived) %>%
+  mutate(Year = as.numeric(Year))
+
+
+# 2. Merge survival structure with all bird-level covariates
+df_annual_survival_base <- left_join(
+    df_survival_core,
+    SeychellesWarblerTraitsCorrected %>% select(-any_of(c("Age", "Year", "Survived"))),
+    by = "BirdID"
+  )
+
+# 3. Merge the AnnualDeathRate into the long format dataframe
+df_annual_survival_final <- left_join(
+    df_annual_survival_base,
+    annual_death_rate_new,
+    by = "Year"
+  )
+
+# 4. Add annual offspring counts
+offspring_with_year <- Offspring2024 %>%
+  left_join(BirthDate %>% select(OffID = BirdID, HatchYear = BirthYear), by = "OffID") %>%
+  filter(!is.na(Parent), !is.na(HatchYear), Confidence > 80) # Standard in SW
+
+offspring_counts <- offspring_with_year %>%
+  group_by(Parent = as.character(Parent), Year = as.numeric(HatchYear)) %>%
+  summarise(Offspring2024 = n(), .groups = "drop")
+
+df_annual_survival_final <- df_annual_survival_final %>%
+  left_join(offspring_counts %>% rename(BirdID = Parent), by = c("BirdID", "Year")) %>%
+  mutate(Offspring2024 = replace_na(Offspring2024, 0L)) # Replace NA offspring counts with 0
+
+# --- Final Verification ---
+str(SeychellesWarblerTraitsCorrected)
+summary(SeychellesWarblerTraitsCorrected$MeanLifetimeDeathRate)
+str(df_annual_survival_final)
+summary(df_annual_survival_final$AnnualDeathRate)
+
+#Compare PLINK and FRZOOROH / lifespan outputs
+#Plot lifespan against FROH (PLINK and RZooRoH)
+froh_long <- SeychellesWarblerTraitsCorrected %>%
+  filter(LastSeenYear < 2024) %>%
+  select(BirdID, Lifespan, FROH_50, FROH_all) %>%
+  pivot_longer(cols = c(FROH_50, FROH_all), 
+               names_to = "FROH_Type", 
+               values_to = "FROH")
+
+ggplot(froh_long, aes(x = FROH, y = Lifespan, color = FROH_Type)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 1.2) +
+  labs(x = "FROH", y = "Lifespan", color = "FROH method") +
+  scale_color_manual(
+    values = c("FROH_50" = "#E41A1C", "FROH_all" = "#377EB8"),
+    labels = c("FROH_50" = "RZooRoH", "FROH_all" = "PLINK")) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(size = 20, margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, margin = margin(r = 15)),
+    axis.text = element_text(size = 16),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    legend.position = "bottom"
+  )
+
+#Is FROH correlating well with pedigree inbreeding coefficients? Yes.
+SequoiaPedigree<-read_xlsx("PedigreeCorrected.xlsx")
+ped_input <- SequoiaPedigree
+
+pedigree_formatted <- ped_input %>%
+  select(id, dam, sire) %>% # Select the correct columns
+  mutate(
+    id = as.character(id),
+    dam = as.character(dam),
+    sire = as.character(sire)
+  ) %>%
+  as.data.frame()
+
+ped_processed_integers <- pedigree_formatted %>%
+  mutate(
+    dam = ifelse(is.na(dam) | dam == "NA" | dam == "", "0", dam),
+    sire = ifelse(is.na(sire) | sire == "NA" | sire == "", "0", sire),
+    id = as.character(id)
+  ) %>%
+  mutate(
+    id_num = suppressWarnings(as.integer(id)),
+    dam_num = suppressWarnings(as.integer(dam)),
+    sire_num = suppressWarnings(as.integer(sire))
+  )
+
+ped_processed_integers <- ped_processed_integers %>%
+  select(id = id_num, dam = dam_num, sire = sire_num)
+
+all_involved_original_ids <- unique(c(
+  ped_processed_integers$id,
+  ped_processed_integers$dam[ped_processed_integers$dam != 0],  # Exclude 0s (coded missing parents)
+  ped_processed_integers$sire[ped_processed_integers$sire != 0] # Exclude 0s
+))
+# Sort original numeric IDs to ensure consistent mapping
+all_involved_original_ids <- sort(all_involved_original_ids[!is.na(all_involved_original_ids)])
+
+fnr_pedigree_input <- data.frame(
+  ID = id_map_comprehensive$FnR_ID,
+  SIRE = 0,
+  DAM = 0,
+  Original_Numeric_ID = id_map_comprehensive$Original_Numeric_ID
+)
+
+ped_with_fnr_subject_ids <- ped_processed_integers %>%
+  left_join(id_map_comprehensive, by = c("id" = "Original_Numeric_ID")) %>%
+  rename(Subject_FnR_ID = FnR_ID)
+
+ped_with_fnr_parent_ids <- ped_with_fnr_subject_ids %>%
+  left_join(id_map_comprehensive, by = c("dam" = "Original_Numeric_ID")) %>%
+  rename(Dam_FnR_ID = FnR_ID)
+
+ped_with_fnr_parent_ids <- ped_with_fnr_parent_ids %>%
+  left_join(id_map_comprehensive, by = c("sire" = "Original_Numeric_ID")) %>%
+  rename(Sire_FnR_ID = FnR_ID)
+
+# Update the fnr_pedigree_input dataframe
+for (i in 1:nrow(ped_with_fnr_parent_ids)) {
+  current_subject_original_id = ped_with_fnr_parent_ids$id[i]
+  
+  # Find the FnR_ID for the current subject
+  subject_fnr_id_to_update = id_map_comprehensive$FnR_ID[id_map_comprehensive$Original_Numeric_ID == current_subject_original_id]
+  
+  if (length(subject_fnr_id_to_update) == 1) {
+    dam_val = ped_with_fnr_parent_ids$dam[i]
+    sire_val = ped_with_fnr_parent_ids$sire[i]
+
+    mapped_dam_fnr_id = ifelse(dam_val == 0, 0, ped_with_fnr_parent_ids$Dam_FnR_ID[i])
+    mapped_sire_fnr_id = ifelse(sire_val == 0, 0, ped_with_fnr_parent_ids$Sire_FnR_ID[i])
+
+    if (dam_val != 0 && is.na(mapped_dam_fnr_id)) stop(paste("Unmapped dam:", dam_val, "for subject:", current_subject_original_id))
+    if (sire_val != 0 && is.na(mapped_sire_fnr_id)) stop(paste("Unmapped sire:", sire_val, "for subject:", current_subject_original_id))
+
+    fnr_pedigree_input$DAM[fnr_pedigree_input$ID == subject_fnr_id_to_update] <- mapped_dam_fnr_id
+    fnr_pedigree_input$SIRE[fnr_pedigree_input$ID == subject_fnr_id_to_update] <- mapped_sire_fnr_id
+  }
+}
+
+fnr_pedigree_final_for_fnr <- fnr_pedigree_input %>%
+  select(ID, SIRE, DAM) %>%
+  arrange(ID)
+
+f_ped_vector_fnr <- FnR::resume_inbreed(ped = fnr_pedigree_final_for_fnr)
+
+results_from_fnr <- data.frame(
+  FnR_ID = fnr_pedigree_final_for_fnr$ID, # This is 1...N
+  F_ped = as.numeric(f_ped_vector_fnr)
+)
+
+pedigree_inbreeding_df <- results_from_fnr %>%
+  left_join(id_map_comprehensive, by = "FnR_ID") %>%
+  filter(!is.na(Original_Numeric_ID)) %>% # Should not filter anyone if map was correct
+  select(Original_Numeric_ID, F_ped) %>%
+  rename(BirdID = Original_Numeric_ID) %>%
+  mutate(BirdID = as.character(BirdID)) # Convert BirdID to character for merging with FROH data
+
+froh_data <- SeychellesWarblerTraitsCorrected %>%
+  select(BirdID, ΔFROH_50) %>%
+  mutate(BirdID = as.character(BirdID))
+
+merged_data <- inner_join(froh_data, pedigree_inbreeding_df, by = "BirdID")
+merged_data <- na.omit(merged_data)
+
+if (nrow(merged_data) > 2) {
+  correlation_test <- cor.test(merged_data$F_ped, merged_data$ΔFROH_50, method = "pearson")
+  correlation_coefficient <- correlation_test$estimate
+  p_value <- correlation_test$p.value
+
+  print(paste("Pearson correlation coefficient (r):", round(correlation_coefficient, 3)))
+  print(paste("P-value:", format.pval(p_value, digits = 3, eps = 0.001)))
+
+  plot_subtitle <- paste0("Pearson's r = ", round(correlation_coefficient, 2),
+                         ", p ", ifelse(p_value < 0.001, "< 0.001", paste0("= ", round(p_value, 3))))
+} else {
+  print("Not enough data points (after merging and NA removal) to calculate correlation.")
+  plot_subtitle <- "Correlation not calculated (insufficient data)"
+}
+
+froh_fped_plot <- ggplot(merged_data, aes(x = ΔFROH_50, y = F_ped)) +
+  geom_point(alpha = 0.5, shape = 16, color = "dodgerblue3") +
+  geom_smooth(method = "lm", col = "firebrick", se = TRUE) +
+  labs(
+    title = expression(paste("Correlation between Genomic (F" ["ΔFROH_50"], ") and Pedigree (F" ["ped"], ") Inbreeding")),
+    subtitle = if(exists("plot_subtitle")) plot_subtitle else "",
+    x = expression(paste("Genomic Inbreeding (F" ["ΔFROH_50"], ")")),
+    y = expression(paste("Pedigree Inbreeding Coefficient (F" ["ped"], ")"))
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.title.x = element_text(margin = margin(t = 10), size = 14),
+    axis.title.y = element_text(margin = margin(r = 10), size = 14),
+    panel.grid.major = element_line(colour = "grey85"),
+    panel.grid.minor = element_line(colour = "grey90")
+  )
+
+# Print the plot
+if (nrow(merged_data) > 0) {
+  print(froh_fped_plot)
+} else {
+  message("No data to plot after merging.")
+}
+
+# --- Output ---
+# Ensure directory exists or adjust path as needed
+output_dir <- "."
+
+write.xlsx(df_annual_survival_final, file = file.path(output_dir, "frohdatalong.xlsx"), quote = FALSE)
+write.xlsx(SeychellesWarblerTraitsCorrected, file = file.path(output_dir, "frohdata.xlsx"), quote = FALSE)
+
+```
+
+Script to call ROH using RZooRoH. Must run on HPC inputting allele frequencies calculated from PLINK.
+
+```{r eval=FALSE, echo=FALSE, include==FALSE}
+#install.packages("RZooRoH", repos = "http://cran.us.r-project.org")
+#Check out the package
+library(RZooRoH)
+## load data
+SNPs <- zoodata(genofile = "rzoorohGP.gen", zformat = "gp")
+## define mode
+mix9R <- zoomodel(K = 9, err = 0.01, krates = c(5, 10, 50, 100, 500, 1000, 5000, 15000, 15000), layers = TRUE)
+## run model on data
+model_output <-zoorun(mix9R, SNPs, localhbd = TRUE)
+
+##get inbreeding coefficients
+F5 <- cumhbd(model_output, 5) 
+F10 <- cumhbd(model_output, 10)
+F50 <- cumhbd(model_output, 50)
+F100 <- cumhbd(model_output, 100)
+F500 <- cumhbd(model_output, 500)
+F1000 <- cumhbd(model_output, 1000)
+F5000 <- cumhbd(model_output, 5000)
+F15000 <- cumhbd(model_output, 15000)
+krates_col <- model_output@krates[, 1]
+
+FRZooRoH <- cbind(F5, F10, F50, F100, F500, F1000, F5000, F15000, krates_col) # Corrected cbind
+FRZooRoH <- as.data.frame(FRZooRoH)
+rownames(FRZooRoH) <- batch_samples
+
+model_output@hbdseg
+
+csv_outfile <- paste0(output_prefix, batch_id, "_FRZooRoH9.csv")
+
+
+```
+## Ch.2 Lifespan GRM inbreeding depression
+
+Investigate co-variation between individual inbreeding coefficients and key life-history traits. I diverged from control variables https://osf.io/tsxv9 as pre-registered here: 1) excluding number of Helpers in territory because this effect is environmentally-dependent (too many helpers are bad)  2) excluding insect counts because these may no longer be measured well as most habitat is well beyond reach of humans, but instead including annual death rate as an environmental proxy. The GRM takes far too long to converge and so the pedigree is used to quantify additive genetic variance instead. For now, I hash out MCMCglmm models with GRM.
+
+```{r lifespan_GRM_inbreeding_depression, eval = TRUE, echo = TRUE}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(MCMCglmm)
+library(lqmm)
+library(Matrix)
+library(readxl)
+
+# MCMCglmm prepare GRM
+
+# --- Set Output Directory 
+# Create a directory to save all outputs
+output_dir <- "mcmcglmm_lifespan_output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+  cat("Created output directory:", output_dir, "\n")
+}
+cat("Starting MCMCglmm analysis at:", as.character(Sys.time()), "\n")
+
+#GRM
+grm_data<- read.table("relatednesscorrected.grm", stringsAsFactors = FALSE)
+Rel.id <- read.table("relatednesscorrected.grm.id", stringsAsFactors=FALSE)
+
+grm_data[,1] <- as.character(factor(grm_data[,1], labels=Rel.id[,2]))
+grm_data[,2] <- as.character(factor(grm_data[,2], labels=Rel.id[,2]))
+names(grm_data) <- c("IID1", "IID2", "nSNPS", "R.GRM")
+
+ids_in_grm <- unique(c(as.character(grm_data$IID1), as.character(grm_data$IID2)))
+n_grm <- length(ids_in_grm)
+print(paste("Found", n_grm, "unique individuals in GRM data."))
+
+grm <- matrix(0, nrow = n_grm, ncol = n_grm,
+              dimnames = list(ids_in_grm, ids_in_grm))
+
+grm[cbind(as.character(grm_data$IID1), as.character(grm_data$IID2))] <- grm_data$R.GRM
+grm[cbind(as.character(grm_data$IID2), as.character(grm_data$IID1))] <- grm_data$R.GRM # Ensure symmetry
+
+# Store original dimnames to reapply consistently
+original_dimnames_list <- dimnames(grm)
+
+#  Standard approach to ensure GRM is positive definite and invert 
+cat("Processing GRM for inversion...\n")
+
+# 1. Check initial properties of grm (optional but informative)
+min_eigen_grm_raw <- min(eigen(grm, only.values = TRUE, symmetric = TRUE)$values)
+cat("Min eigenvalue of raw GRM:", min_eigen_grm_raw, "\n")
+
+# 2. Make grm positive definite if it's not already sufficiently PD
+pd_threshold <- 1e-6
+grm_to_invert <- grm
+
+if (min_eigen_grm_raw < pd_threshold) {
+    cat("Raw GRM has eigenvalues less than", pd_threshold, ". Attempting to make it positive definite using Matrix::nearPD.\n")
+    # Matrix::nearPD finds the "nearest" positive definite matrix.
+    # ensureSymmetry=TRUE is default and appropriate. base.matrix=TRUE returns a standard matrix.
+    nearPD_result <- Matrix::nearPD(grm, corr = FALSE, ensureSymmetry = TRUE, base.matrix = TRUE, trace = FALSE)
+    grm_to_invert <- nearPD_result$mat
+    dimnames(grm_to_invert) <- original_dimnames_list
+
+    if (!nearPD_result$converged) {
+        warning("Matrix::nearPD did not converge. The resulting matrix might not be perfectly positive definite. Check results carefully.")
+    }
+    min_eigen_grm_bent <- min(eigen(grm_to_invert, only.values = TRUE, symmetric = TRUE)$values)
+    cat("Min eigenvalue of BENT GRM after nearPD:", min_eigen_grm_bent, "\n")
+    if (min_eigen_grm_bent < pd_threshold && min_eigen_grm_bent <= 0) { # Check if it's still non-PD
+         # As a fallback, add a small constant to the diagonal (ridge) if nearPD fails or result is still not PD enough
+         # This is a simpler form of bending often called "diag-buffing" or adding a ridge.
+         # A value like 0.01 or 0.02 * mean(diag(grm)) or a small absolute value.
+         cat("Bent GRM still not sufficiently positive definite. Applying a small diagonal ridge.\n")
+         ridge_val <- 1e-4 # Small ridge value
+         diag(grm_to_invert) <- diag(grm_to_invert) + ridge_val
+         # Ensure the matrix remains symmetric if you only added to diagonal
+         # grm_to_invert <- (grm_to_invert + t(grm_to_invert)) / 2 # already symmetric
+         min_eigen_grm_ridged <- min(eigen(grm_to_invert, only.values = TRUE, symmetric = TRUE)$values)
+         cat("Min eigenvalue of GRM after diagonal ridge:", min_eigen_grm_ridged, "\n")
+         if (min_eigen_grm_ridged <=0) {
+            stop("STOPPING: The GRM could not be made robustly positive definite even with a ridge. Check GRM construction.")
+         }
+    }
+} else {
+    cat("Raw GRM appears sufficiently positive definite (min eigenvalue >=", pd_threshold, ").\n")
+}
+
+# 3. Invert the (now positive definite) grm
+cat("Inverting the processed GRM using solve()...\n")
+grm_inv <- solve(grm_to_invert)
+dimnames(grm_inv) <- original_dimnames_list
+
+# 4. Convert to dgCMatrix (sparse matrix format for MCMCglmm)
+grm_inv_final <- as(grm_inv, "dgCMatrix")
+cat("GRM inverse converted to dgCMatrix.\n")
+
+#  DIAGNOSTIC CHECK on the FINAL Ainv matrix 
+grm_inv_dense_for_check <- as.matrix(grm_inv_final)
+min_eigen_check <- min(eigen(grm_inv_dense_for_check, only.values = TRUE, symmetric = TRUE)$values)
+print(paste("Min eigenvalue of FINAL Ainv matrix (from dense form) being passed to MCMCglmm:", min_eigen_check))
+
+if(min_eigen_check <= 0) {
+  # It's unusual for this to fail if grm_to_invert was robustly PD.
+  # Could indicate extreme numerical issues.
+  stop("STOPPING: The final Ainv matrix is not positive definite! Check all GRM processing steps.")
+} else {
+  print("Final Ainv matrix appears positive definite.")
+}
+
+
+# MCMCglmm Lifespan Analysis (GRM) check outputs and run again with improvements made 23/04/25
+
+#Priors
+# R-structure (Residual): Fixed to 1 for threshold models
+R_prior = list(V = 1, nu = 0.002)
+
+# G-structure (Random Effects): Order MUST match random formula
+# Formula: ~animal
+G_prior = list(
+    # G1 for animal (additive genetic)
+    G1 = list(V = matrix(1), nu = 1, alpha.mu = matrix(0), alpha.V = matrix(1000))
+)
+mcmc_prior <- list(R = R_prior, G = G_prior)
+
+# Set MCMC parameters (adjust as needed, use shorter for testing)
+nitt_run <- 150000; thin_run <- 100; burnin_run <- 15000 # Longer run
+#nitt_run <- 26000; thin_run <- 10; burnin_run <- 6000  # Shorter test run
+
+#Model
+fixed_formula_lifespan <- Lifespan ~ FROH_all10_cent*BirthYearDeathRate + Sex +   MaternalAge_std
+random_formula_lifespan <- ~ animal
+
+SeychellesWarblerTraitsCorrected <- readxl::read_excel("frohdata.xlsx")
+SeychellesWarblerTraitsCorrected_filtered <- SeychellesWarblerTraitsCorrected %>%
+  mutate(
+    animal = factor(BirdID, levels = rownames(grm_inv_final)),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    FROH_all_cent = FROH_50 - mean(FROH_50, na.rm = TRUE),
+    FROH_all10 = FROH_50 * 10,
+    FROH_all10_cent = FROH_all10 - mean(FROH_all10, na.rm = TRUE),
+    MaternalAge_std = scale(MaternalAge)[,1], # Standardize MaternalAge
+  ) %>%
+  
+  #  Filter NAs 
+  filter(
+    LastSeenYear<2024,
+    !is.na(FROH_all10_cent),
+    !is.na(Sex),
+    !is.na(BirthYearDeathRate),
+    !is.na(BirthYear),
+    !is.na(animal),
+    !is.na(MaternalAge_std),
+    !is.na(Lifespan)
+  ) %>%
+  as.data.frame()
+
+#GRM genetic additive variance
+
+model_lifespan_poisson_grm <- MCMCglmm(
+     fixed = fixed_formula_lifespan,
+     random = random_formula_lifespan,
+     data = SeychellesWarblerTraitsCorrected_filtered,
+     ginverse = list(animal = grm_inv_final),
+     prior = mcmc_prior,
+     family = "poisson",
+     pr = TRUE,
+     trunc = FALSE,
+     nitt = nitt_run,
+     thin = thin_run,
+     burnin = burnin_run,
+     verbose = TRUE
+     )
+summary(model_lifespan_poisson_grm)
+
+# Save Outputs and Report Key Results
+
+#  Save Model Objects 
+cat("Saving model objects...\n")
+saveRDS(model_lifespan_poisson_grm, file = file.path(output_dir, "model_lifespan_poisson_grm.rds"))
+cat("Model objects saved.\n")
+
+#  Save Model Summaries 
+cat("Saving model summaries...\n")
+# GRM Summary
+sink(file.path(output_dir, "summary_lifespan_poisson_grm.txt"))
+summary(model_lifespan_poisson_grm)
+sink()
+
+#  Save VCV Plots for Convergence Check 
+cat("Saving VCV plots...\n")
+# GRM VCV Plot
+png(file.path(output_dir, "plot_vcv_lifespan_poisson_grm.png"), width = 800, height = 600)
+plot(model_lifespan_poisson_grm$VCV, main = "VCV Trace - GRM Model")
+dev.off()
+
+
+#  Calculate and Report Heritability 
+cat("\n Heritability Estimates \n")
+
+# GRM Model Heritability
+cat("GRM Model:\n")
+Va_grm_posterior <- model_lifespan_poisson_grm$VCV[, "animal"]
+Vr_grm_posterior <- model_lifespan_poisson_grm$VCV[, "units"] # Residual variance
+Vp_grm_posterior <- Va_grm_posterior + Vr_grm_posterior
+h2_grm_posterior <- Va_grm_posterior / Vp_grm_posterior
+Va_se <- sd(Va_grm_posterior)
+
+h2_grm_mean <- mean(h2_grm_posterior)
+h2_grm_mode <- posterior.mode(h2_grm_posterior)
+h2_grm_HPD_interval <- HPDinterval(h2_grm_posterior, prob = 0.95)
+
+cat("Standard Error of Va:", round(mean(Va_se), 4), "\n")
+cat("  Posterior Mean Heritability (h²):", round(h2_grm_mean, 4), "\n")
+cat("  Posterior Mode Heritability (h²):", round(h2_grm_mode, 4), "\n")
+cat("  95% HPD Interval for Heritability (h²):", round(h2_grm_HPD_interval[1], 4), "-", round(h2_grm_HPD_interval[2], 4), "\n")
+
+#  Report Inbreeding Fixed Effect 
+cat("\n Inbreeding (FROH_all10_cent) Fixed Effect \n")
+
+# GRM Model
+cat("GRM Model:\n")
+inbreeding_grm_summary <- summary(model_lifespan_poisson_grm)$solutions["FROH_all10_cent", ]
+cat("  Posterior Mean:", round(inbreeding_grm_summary["post.mean"], 4), "\n")
+cat("  95% Credible Interval:", round(inbreeding_grm_summary["l-95% CI"], 4), "-", round(inbreeding_grm_summary["u-95% CI"], 4), "\n")
+cat("  pMCMC:", round(inbreeding_grm_summary["pMCMC"], 4), "\n")
+
+
+#  Save Session Info 
+cat("\nSaving session info...\n")
+sink(file.path(output_dir, "session_info.txt"))
+sessionInfo()
+sink()
+cat("Session info saved.\n")
+
+cat("\nAnalysis complete at:", as.character(Sys.time()), "\n")
+
+
+```
+## Ch.2 Lifespan ped inbreeding depression
+
+Investigate co-variation between individual inbreeding coefficients and key life-history traits. I diverged from control variables https://osf.io/tsxv9 as pre-registered here: 1) excluding number of Helpers in territory because this effect is environmentally-dependent (too many helpers are bad)  2) excluding insect counts because these may no longer be measured well as most habitat is well beyond reach of humans, but instead including annual death rate as an environmental proxy. The GRM takes far too long to converge and so the pedigree is used to quantify additive genetic variance instead. For now, I hash out MCMCglmm models with GRM.
+
+```{r lifespan_ped_inbreeding_depression, eval = TRUE, echo = TRUE}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(MCMCglmm)
+library(lqmm)
+library(Matrix)
+library(readxl)
+
+# MCMCglmm prepare Pedigree
+
+#  Set Output Directory 
+# Create a directory to save all outputs
+output_dir <- "mcmcglmm_lifespan_output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+  cat("Created output directory:", output_dir, "\n")
+}
+cat("Starting MCMCglmm analysis at:", as.character(Sys.time()), "\n")
+
+#Pedigree
+SequoiaPedigree<-read_xlsx("PedigreeCorrected.xlsx")
+ped_input <- SequoiaPedigree
+
+pedigree_formatted <- ped_input %>%
+  select(id, dam, sire) %>% # Select the correct columns
+  mutate(
+    id = as.character(id),
+    dam = as.character(dam),
+    sire = as.character(sire)
+  ) %>%
+  as.data.frame()
+
+
+# Initialize list of ordered individuals
+ordered_ids <- character(0)
+
+# Repeat until all individuals are ordered
+while (nrow(pedigree_formatted) > 0) {
+  # Identify individuals whose sire and dam are either NA or already in the ordered list
+  eligible <- (is.na(pedigree_formatted$dam) | pedigree_formatted$dam %in% ordered_ids) &
+              (is.na(pedigree_formatted$sire) | pedigree_formatted$sire %in% ordered_ids)
+
+  # Safety check in case of cycles or missing parents
+  if (!any(eligible)) {
+    stop("Cannot resolve pedigree ordering. Possible loop or missing parent not in pedigree.")
+  }
+
+  # Add eligible individuals
+  ordered_ids <- c(ordered_ids, pedigree_formatted$id[eligible])
+
+  # Remove added individuals from working set
+  pedigree_formatted <- pedigree_formatted[!eligible, ]
+}
+
+# Reorder pedigree_formatted based on ordered_ids
+pedigree_formatted <- as.data.frame(pedigree_formatted[match(ordered_ids, pedigree_formatted$id), ])
+
+# MCMCglmm Lifespan Analysis (Pedigreee)
+
+#Priors
+# R-structure (Residual): Fixed to 1 for threshold models
+R_prior = list(V = 1, nu = 0.002)
+
+# G-structure (Random Effects): Order MUST match random formula
+# Formula: ~animal
+G_prior = list(
+    # G1 for animal (additive genetic)
+    G1 = list(V = matrix(1), nu = 1, alpha.mu = matrix(0), alpha.V = matrix(1000))
+)
+mcmc_prior <- list(R = R_prior, G = G_prior)
+
+
+#Model
+fixed_formula_lifespan <- Lifespan ~ FROH_all10_cent*BirthYearDeathRate + Sex  +  MaternalAge_std
+random_formula_lifespan <- ~ animal
+
+SeychellesWarblerTraitsCorrected <- readxl::read_excel("frohdata.xlsx")
+
+
+# Set MCMC parameters
+nitt_run <- 1000000; thin_run <- 100; burnin_run <- 50000 # Longer run
+#nitt_run <- 26000; thin_run <- 10; burnin_run <- 6000  # Shorter test run
+#Pedigree genetic additive variance
+
+SeychellesWarblerTraitsCorrected_filtered <- SeychellesWarblerTraitsCorrected %>%
+  mutate(
+    animal = as.character(BirdID, levels = unique(c(pedigree_formatted$id))),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    # Center and Scale FROH_all
+    FROH_all_cent = FROH_50 - mean(FROH_50, na.rm = TRUE),
+    FROH_all10 = FROH_50 * 10,
+    FROH_all10_cent = FROH_all10 - mean(FROH_all10, na.rm = TRUE),
+    # Scale/Center MaternalAge
+    MaternalAge_std = scale(MaternalAge)[,1], # Standardize MaternalAge
+  ) %>%
+  
+  # Filter NAs
+  filter(
+    LastSeenYear<2024,
+    !is.na(FROH_all10_cent),
+    !is.na(Sex),
+    !is.na(BirthYearDeathRate),
+    !is.na(BirthYear),
+    !is.na(animal),
+    !is.na(MaternalAge_std)
+  ) %>%
+  as.data.frame()
+
+model_lifespan_poisson_ped <- MCMCglmm(
+     fixed = fixed_formula_lifespan,
+     random = random_formula_lifespan,
+     data = SeychellesWarblerTraitsCorrected_filtered,
+     family = "poisson",
+     pedigree = pedigree_formatted,
+     prior = mcmc_prior,
+     pr = TRUE,
+     trunc = FALSE,
+     nitt = nitt_run,
+     thin = thin_run,
+     burnin = burnin_run,
+     verbose = TRUE
+     )
+summary(model_lifespan_poisson_ped)
+
+# Save Outputs and Report Key Results
+
+#  Save Model Objects 
+cat("Saving model objects...\n")
+saveRDS(model_lifespan_poisson_ped, file = file.path(output_dir, "model_lifespan_poisson_ped.rds"))
+cat("Model objects saved.\n")
+
+#  Save Model Summaries 
+cat("Saving model summaries...\n")
+
+# Pedigree Summary
+sink(file.path(output_dir, "summary_lifespan_poisson_ped.txt"))
+summary(model_lifespan_poisson_ped)
+sink() # Close sink
+cat("Model summaries saved.\n")
+
+
+#  Save VCV Plots for Convergence Check 
+cat("Saving VCV plots...\n")
+
+# Pedigree VCV Plot
+png(file.path(output_dir, "plot_vcv_lifespan_poisson_ped.png"), width = 800, height = 600)
+plot(model_lifespan_poisson_ped$VCV, main = "VCV Trace - Pedigree Model")
+dev.off()
+cat("VCV plots saved.\n")
+
+#  Calculate and Report Heritability 
+cat("\n Heritability Estimates \n")
+
+
+# Pedigree Model Heritability
+cat("\nPedigree Model:\n")
+Va_ped_posterior <- model_lifespan_poisson_ped$VCV[, "animal"]
+Vr_ped_posterior <- model_lifespan_poisson_ped$VCV[, "units"] # Residual variance
+Vp_ped_posterior <- Va_ped_posterior + Vr_ped_posterior
+h2_ped_posterior <- Va_ped_posterior / Vp_ped_posterior
+Va_se <- sd(Va_ped_posterior)
+
+h2_ped_mean <- mean(h2_ped_posterior)
+h2_ped_mode <- posterior.mode(h2_ped_posterior)
+h2_ped_HPD_interval <- HPDinterval(h2_ped_posterior, prob = 0.95)
+
+cat("Standard Error of Va:", round(mean(Va_se), 4), "\n")
+cat("  Posterior Mean Heritability (h²):", round(h2_ped_mean, 4), "\n")
+cat("  Posterior Mode Heritability (h²):", round(h2_ped_mode, 4), "\n")
+cat("  95% HPD Interval for Heritability (h²):", round(h2_ped_HPD_interval[1], 4), "-", round(h2_ped_HPD_interval[2], 4), "\n")
+
+#  Report Inbreeding Fixed Effect 
+cat("\n Inbreeding (FROH_all10_cent) Fixed Effect \n")
+
+
+# Pedigree Model
+cat("\nPedigree Model:\n")
+inbreeding_ped_summary <- summary(model_lifespan_poisson_ped)$solutions["FROH_all10_cent", ]
+cat("  Posterior Mean:", round(inbreeding_ped_summary["post.mean"], 4), "\n")
+cat("  95% Credible Interval:", round(inbreeding_ped_summary["l-95% CI"], 4), "-", round(inbreeding_ped_summary["u-95% CI"], 4), "\n")
+cat("  pMCMC:", round(inbreeding_ped_summary["pMCMC"], 4), "\n")
+
+
+#  Save Session Info 
+cat("\nSaving session info...\n")
+sink(file.path(output_dir, "session_info.txt"))
+sessionInfo()
+sink()
+cat("Session info saved.\n")
+
+cat("\nAnalysis complete at:", as.character(Sys.time()), "\n")
+
+
+```
+## Ch.2 Fecundity GRM inbreeding depression
+
+```{r fecundity_inbreeding_depression, eval = TRUE, echo = TRUE}
+# MCMCglmm Lifetime fecundity Analysis (GRM)
+
+#  Load Libraries 
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(MCMCglmm)
+library(Matrix)
+library(readxl)
+library(lqmm)
+
+
+#  Set Output Directory 
+# Create a directory to save all outputs
+output_dir <- "mcmcglmm_fecundity_output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+  cat("Created output directory:", output_dir, "\n")
+}
+
+cat("Starting MCMCglmm analysis at:", as.character(Sys.time()), "\n")
+
+
+# Data Loading and Preparation
+
+#  GRM Preparation 
+cat("Loading and processing GRM data...\n")
+grm_data <- read.table("relatednesscorrected.grm", stringsAsFactors = FALSE)
+Rel.id <- read.table("relatednesscorrected.grm.id", stringsAsFactors = FALSE)
+
+grm_data[, 1] <- as.character(factor(grm_data[, 1], labels = Rel.id[, 2]))
+grm_data[, 2] <- as.character(factor(grm_data[, 2], labels = Rel.id[, 2]))
+names(grm_data) <- c("IID1", "IID2", "nSNPS", "R.GRM")
+
+ids_in_grm <- unique(c(as.character(grm_data$IID1), as.character(grm_data$IID2)))
+n_grm <- length(ids_in_grm)
+cat("Found", n_grm, "unique individuals in GRM data.\n")
+
+grm <- matrix(0, nrow = n_grm, ncol = n_grm,
+              dimnames = list(ids_in_grm, ids_in_grm))
+
+grm[cbind(as.character(grm_data$IID1), as.character(grm_data$IID2))] <- grm_data$R.GRM
+grm[cbind(as.character(grm_data$IID2), as.character(grm_data$IID1))] <- grm_data$R.GRM # Ensure symmetry
+
+# Store original dimnames to reapply consistently
+original_dimnames_list <- dimnames(grm)
+
+#  Standard approach to ensure GRM is positive definite and invert 
+cat("Processing GRM for inversion...\n")
+
+# 1. Check initial properties of grm (optional but informative)
+min_eigen_grm_raw <- min(eigen(grm, only.values = TRUE, symmetric = TRUE)$values)
+cat("Min eigenvalue of raw GRM:", min_eigen_grm_raw, "\n")
+
+# 2. Make grm positive definite if it's not already sufficiently PD
+pd_threshold <- 1e-6
+grm_to_invert <- grm
+
+if (min_eigen_grm_raw < pd_threshold) {
+    cat("Raw GRM has eigenvalues less than", pd_threshold, ". Attempting to make it positive definite using Matrix::nearPD.\n")
+    # Matrix::nearPD finds the "nearest" positive definite matrix.
+    # ensureSymmetry=TRUE is default and appropriate. base.matrix=TRUE returns a standard matrix.
+    nearPD_result <- Matrix::nearPD(grm, corr = FALSE, ensureSymmetry = TRUE, base.matrix = TRUE, trace = FALSE)
+    grm_to_invert <- nearPD_result$mat
+    dimnames(grm_to_invert) <- original_dimnames_list
+
+    if (!nearPD_result$converged) {
+        warning("Matrix::nearPD did not converge. The resulting matrix might not be perfectly positive definite. Check results carefully.")
+    }
+    min_eigen_grm_bent <- min(eigen(grm_to_invert, only.values = TRUE, symmetric = TRUE)$values)
+    cat("Min eigenvalue of BENT GRM after nearPD:", min_eigen_grm_bent, "\n")
+    if (min_eigen_grm_bent < pd_threshold && min_eigen_grm_bent <= 0) { # Check if it's still non-PD
+         # As a fallback, add a small constant to the diagonal (ridge) if nearPD fails or result is still not PD enough
+         # This is a simpler form of bending often called "diag-buffing" or adding a ridge.
+         # A value like 0.01 or 0.02 * mean(diag(grm)) or a small absolute value.
+         cat("Bent GRM still not sufficiently positive definite. Applying a small diagonal ridge.\n")
+         ridge_val <- 1e-4 # Small ridge value
+         diag(grm_to_invert) <- diag(grm_to_invert) + ridge_val
+         # Ensure the matrix remains symmetric if you only added to diagonal
+         # grm_to_invert <- (grm_to_invert + t(grm_to_invert)) / 2 # already symmetric
+         min_eigen_grm_ridged <- min(eigen(grm_to_invert, only.values = TRUE, symmetric = TRUE)$values)
+         cat("Min eigenvalue of GRM after diagonal ridge:", min_eigen_grm_ridged, "\n")
+         if (min_eigen_grm_ridged <=0) {
+            stop("STOPPING: The GRM could not be made robustly positive definite even with a ridge. Check GRM construction.")
+         }
+    }
+} else {
+    cat("Raw GRM appears sufficiently positive definite (min eigenvalue >=", pd_threshold, ").\n")
+}
+
+# 3. Invert the (now positive definite) grm
+cat("Inverting the processed GRM using solve()...\n")
+grm_inv <- solve(grm_to_invert)
+dimnames(grm_inv) <- original_dimnames_list
+
+# 4. Convert to dgCMatrix (sparse matrix format for MCMCglmm)
+grm_inv_final <- as(grm_inv, "dgCMatrix")
+cat("GRM inverse converted to dgCMatrix.\n")
+
+#  DIAGNOSTIC CHECK on the FINAL Ainv matrix 
+grm_inv_dense_for_check <- as.matrix(grm_inv_final)
+min_eigen_check <- min(eigen(grm_inv_dense_for_check, only.values = TRUE, symmetric = TRUE)$values)
+print(paste("Min eigenvalue of FINAL Ainv matrix (from dense form) being passed to MCMCglmm:", min_eigen_check))
+
+if(min_eigen_check <= 0) {
+  # It's unusual for this to fail if grm_to_invert was robustly PD.
+  # Could indicate extreme numerical issues.
+  stop("STOPPING: The final Ainv matrix is not positive definite! Check all GRM processing steps.")
+} else {
+  print("Final Ainv matrix appears positive definite.")
+}
+
+
+#  Load and Prepare Trait Data 
+cat("Loading and preparing Trait data...\n")
+SeychellesWarblerTraitsCorrected <- readxl::read_excel("frohdata.xlsx")
+
+SeychellesWarblerTraitsCorrected_filteredfecundity <- SeychellesWarblerTraitsCorrected %>%
+  mutate(
+    animal = factor(BirdID, levels = rownames(grm_inv_final)),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    # Center FROH_all10
+    FROH_all10 = FROH_50 * 10,
+    FROH_all10_cent = FROH_all10 - mean(FROH_all10, na.rm = TRUE),
+    # Standardize MaternalAge
+    MaternalAge_std = scale(MaternalAge)[,1],
+    ReproductiveOutput = ifelse(is.na(ReproductiveOutput), 0, ReproductiveOutput),
+    
+  ) %>%
+  #  Filter NAs for Model Variables 
+  filter(
+    LastSeenYear < 2024,
+    !is.na(ReproductiveOutput),
+    !is.na(FROH_all10_cent),
+    !is.na(Sex),
+    !is.na(BirthYearDeathRate),
+    !is.na(BirthYear),
+    !is.na(animal),
+    !is.na(MaternalAge_std)
+  ) %>%
+  as.data.frame()
+
+cat("Filtered data has", nrow(SeychellesWarblerTraitsCorrected_filteredfecundity), "individuals.\n")
+cat("Data preparation complete.\n")
+
+# Model Setup
+
+# Priors
+# R-structure (Residual): Fixed to 1 for threshold models (but using poisson here)
+# Using weakly informative priors for poisson model
+R_prior = list(V = 1, nu = 0.002)
+
+# G-structure (Random Effects): Order MUST match random formula (~ animal + BirthYear)
+G_prior = list(
+    # G1 for animal (additive genetic)
+    G1 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000)
+)
+mcmc_prior <- list(R = R_prior, G = G_prior)
+
+# Set MCMC parameters (Longer run as requested)
+nitt_run <- 150000   # Total iterations
+thin_run <- 100      # Thinning interval
+burnin_run <- 15000 # Burn-in period
+
+cat("MCMC parameters set: nitt =", nitt_run, ", thin =", thin_run, ", burnin =", burnin_run, "\n")
+
+# Fixed and Random Formulas
+fixed_formula_fecundity <- ReproductiveOutput ~ FROH_all10_cent + Sex + BirthYearDeathRate +  MaternalAge_std
+random_formula_fecundity <- ~ animal
+
+# Run MCMCglmm Models
+
+cat("Running GRM model...\n")
+# GRM genetic additive variance
+model_fecundity_poisson_grm <- MCMCglmm(
+    fixed = fixed_formula_fecundity,
+    random = random_formula_fecundity,
+    data = SeychellesWarblerTraitsCorrected_filteredfecundity,
+    family = "poisson",
+    ginverse = list(animal = grm_inv_final),
+    prior = mcmc_prior,
+    pr = TRUE,
+    trunc = FALSE,
+    nitt = nitt_run,
+    thin = thin_run,
+    burnin = burnin_run,
+    verbose = TRUE
+)
+cat("GRM model finished.\n")
+
+
+
+# Save Outputs and Report Key Results
+
+#  Save Model Objects 
+cat("Saving model objects...\n")
+saveRDS(model_fecundity_poisson_grm, file = file.path(output_dir, "model_fecundity_poisson_grm.rds"))
+cat("Model objects saved.\n")
+
+#  Save Model Summaries 
+cat("Saving model summaries...\n")
+# GRM Summary
+sink(file.path(output_dir, "summary_fecundity_poisson_grm.txt"))
+summary(model_fecundity_poisson_grm)
+sink()
+
+#  Save VCV Plots for Convergence Check 
+cat("Saving VCV plots...\n")
+# GRM VCV Plot
+png(file.path(output_dir, "plot_vcv_fecundity_poisson_grm.png"), width = 800, height = 600)
+plot(model_fecundity_poisson_grm$VCV, main = "VCV Trace - GRM Model")
+dev.off()
+
+#  Calculate and Report Heritability 
+cat("\n Heritability Estimates \n")
+
+# GRM Model Heritability
+cat("GRM Model:\n")
+Va_grm_posterior <- model_fecundity_poisson_grm$VCV[, "animal"]
+Vr_grm_posterior <- model_fecundity_poisson_grm$VCV[, "units"] # Residual variance
+Vp_grm_posterior <- Va_grm_posterior + Vr_grm_posterior
+h2_grm_posterior <- Va_grm_posterior / Vp_grm_posterior
+Va_se <- sd(Va_grm_posterior)
+
+h2_grm_mean <- mean(h2_grm_posterior)
+h2_grm_mode <- posterior.mode(h2_grm_posterior)
+h2_grm_HPD_interval <- HPDinterval(h2_grm_posterior, prob = 0.95)
+
+cat("Posterior SD of Va (link scale):", round(mean(Va_se), 4), "\n")
+cat("  Posterior Mean Heritability (h²):", round(h2_grm_mean, 4), "\n")
+cat("  Posterior Mode Heritability (h²):", round(h2_grm_mode, 4), "\n")
+cat("  95% HPD Interval for Heritability (h²):", round(h2_grm_HPD_interval[1], 4), "-", round(h2_grm_HPD_interval[2], 4), "\n")
+
+# GRM Model
+cat("GRM Model:\n")
+inbreeding_grm_summary <- summary(model_fecundity_poisson_grm)$solutions["FROH_all10_cent", ]
+cat("  Posterior Mean:", round(inbreeding_grm_summary["post.mean"], 4), "\n")
+cat("  95% Credible Interval:", round(inbreeding_grm_summary["l-95% CI"], 4), "-", round(inbreeding_grm_summary["u-95% CI"], 4), "\n")
+cat("  pMCMC:", round(inbreeding_grm_summary["pMCMC"], 4), "\n")
+
+
+#  Save Session Info 
+cat("\nSaving session info...\n")
+sink(file.path(output_dir, "session_info.txt"))
+sessionInfo()
+sink()
+cat("Session info saved.\n")
+
+cat("\nAnalysis complete at:", as.character(Sys.time()), "\n")
+
+```
+## Ch.2 Fecundity ped inbreeding depression
+
+```{r fecundity_ped_inbreeding_depression, eval = TRUE, echo = TRUE}
+# MCMCglmm Lifetime fecundity Analysis (Ped)
+
+#  Load Libraries 
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(MCMCglmm)
+library(Matrix)
+library(readxl)
+library(lqmm)
+
+#  Set Output Directory 
+# Create a directory to save all outputs
+output_dir <- "mcmcglmm_fecundity_output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+  cat("Created output directory:", output_dir, "\n")
+}
+
+cat("Starting MCMCglmm analysis at:", as.character(Sys.time()), "\n")
+
+# Data Loading and Preparation
+
+#  Pedigree Preparation 
+cat("Loading and formatting Pedigree data...\n")
+SequoiaPedigree<-read_xlsx("PedigreeCorrected.xlsx")
+ped_input <- SequoiaPedigree
+
+pedigree_formatted <- ped_input %>%
+  select(id, dam, sire) %>%
+  mutate(
+    id = as.character(id),
+    dam = as.character(dam),
+    sire = as.character(sire)
+  ) %>%
+  as.data.frame()
+
+# Initialize list of ordered individuals
+ordered_ids <- character(0)
+
+# Repeat until all individuals are ordered
+while (nrow(pedigree_formatted) > 0) {
+  # Identify individuals whose sire and dam are either NA or already in the ordered list
+  eligible <- (is.na(pedigree_formatted$dam) | pedigree_formatted$dam %in% ordered_ids) &
+              (is.na(pedigree_formatted$sire) | pedigree_formatted$sire %in% ordered_ids)
+
+  # Safety check in case of cycles or missing parents
+  if (!any(eligible)) {
+    stop("Cannot resolve pedigree ordering. Possible loop or missing parent not in pedigree.")
+  }
+
+  # Add eligible individuals
+  ordered_ids <- c(ordered_ids, pedigree_formatted$id[eligible])
+
+  # Remove added individuals from working set
+  pedigree_formatted <- pedigree_formatted[!eligible, ]
+}
+
+# Reorder pedigree_formatted based on ordered_ids
+pedigree_formatted <- pedigree_formatted[match(ordered_ids, pedigree_formatted$id), ]
+
+cat("Pedigree formatted successfully.\n")
+
+
+#  Load and Prepare Trait Data 
+cat("Loading and preparing Trait data...\n")
+SeychellesWarblerTraitsCorrected <- readxl::read_excel("frohdata.xlsx")
+
+
+SeychellesWarblerTraitsCorrected_filteredfecundity <- SeychellesWarblerTraitsCorrected %>%
+  mutate(
+    #  Create Factors and IDs 
+    animal = as.character(BirdID),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    # Center FROH_all10
+    FROH_all10 = FROH_50 * 10,
+    FROH_all10_cent = FROH_all10 - mean(FROH_all10, na.rm = TRUE),
+    # Standardize MaternalAge
+    MaternalAge_std = scale(MaternalAge)[,1],
+    ReproductiveOutput = ifelse(is.na(ReproductiveOutput), 0, ReproductiveOutput),
+    
+  ) %>%
+  #  Filter NAs for Model Variables 
+  filter(
+    LastSeenYear < 2024,
+    !is.na(ReproductiveOutput),
+    !is.na(FROH_all10_cent),
+    !is.na(Sex),
+    !is.na(MeanLifetimeDeathRate),
+    !is.na(BirthYear),
+    !is.na(animal),
+    !is.na(MaternalAge_std)
+  ) %>%
+  as.data.frame()
+
+cat("Data preparation complete.\n")
+
+# Model Setup
+
+# Priors
+# R-structure (Residual): Fixed to 1 for threshold models (but using poisson here)
+# Using weakly informative priors for poisson model
+R_prior = list(V = 1, nu = 0.002)
+
+# G-structure (Random Effects)
+G_prior = list(
+    # G1 for animal (additive genetic)
+    G1 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000)
+)
+mcmc_prior <- list(R = R_prior, G = G_prior)
+
+# Set MCMC parameters
+nitt_run <- 1000000   # Total iterations
+thin_run <- 100      # Thinning interval
+burnin_run <- 50000 # Burn-in period
+
+cat("MCMC parameters set: nitt =", nitt_run, ", thin =", thin_run, ", burnin =", burnin_run, "\n")
+
+# Fixed and Random Formulas
+fixed_formula_fecundity <- ReproductiveOutput ~ FROH_all10_cent + Sex + BirthYearDeathRate +  MaternalAge_std
+random_formula_fecundity <- ~ animal
+
+
+# Run MCMCglmm Models
+
+# Set MCMC parameters
+nitt_run <- 1000000; thin_run <- 100; burnin_run <- 50000 # Longer run
+#nitt_run <- 26000; thin_run <- 10; burnin_run <- 6000  # Shorter test run
+
+cat("Running Pedigree model...\n")
+# Pedigree genetic additive variance
+model_fecundity_poisson_ped <- MCMCglmm(
+    fixed = fixed_formula_fecundity,
+    random = random_formula_fecundity,
+    data = SeychellesWarblerTraitsCorrected_filteredfecundity,
+    family = "poisson",
+    pedigree = pedigree_formatted,
+    prior = mcmc_prior,
+    pr = TRUE,
+    trunc = FALSE,
+    nitt = nitt_run,
+    thin = thin_run,
+    burnin = burnin_run,
+    verbose = TRUE
+)
+cat("Pedigree model finished.\n")
+
+# Save Outputs and Report Key Results
+
+#  Save Model Objects 
+cat("Saving model objects...\n")
+saveRDS(model_fecundity_poisson_ped, file = file.path(output_dir, "model_fecundity_poisson_ped.rds"))
+cat("Model objects saved.\n")
+
+#  Save Model Summaries 
+
+# Pedigree Summary
+sink(file.path(output_dir, "summary_fecundity_poisson_ped.txt"))
+summary(model_fecundity_poisson_ped)
+sink()
+cat("Model summaries saved.\n")
+
+
+#  Save VCV Plots for Convergence Check 
+
+# Pedigree VCV Plot
+png(file.path(output_dir, "plot_vcv_fecundity_poisson_ped.png"), width = 800, height = 600)
+plot(model_fecundity_poisson_ped$VCV, main = "VCV Trace - Pedigree Model")
+dev.off()
+cat("VCV plots saved.\n")
+
+#  Calculate and Report Heritability 
+cat("\n Heritability Estimates \n")
+
+# Pedigree Model Heritability
+cat("\nPedigree Model:\n")
+Va_ped_posterior <- model_fecundity_poisson_ped$VCV[, "animal"]
+Vr_ped_posterior <- model_fecundity_poisson_ped$VCV[, "units"]
+Vp_ped_posterior <- Va_ped_posterior + Vr_ped_posterior
+h2_ped_posterior <- Va_ped_posterior / Vp_ped_posterior
+Va_se <- sd(Va_ped_posterior)
+
+h2_ped_mean <- mean(h2_ped_posterior)
+h2_ped_mode <- posterior.mode(h2_ped_posterior)
+h2_ped_HPD_interval <- HPDinterval(h2_ped_posterior, prob = 0.95)
+
+cat("Posterior SD of Va (link scale)", round(mean(Va_se), 4), "\n")
+cat("  Posterior Mean Heritability (h²):", round(h2_ped_mean, 4), "\n")
+cat("  Posterior Mode Heritability (h²):", round(h2_ped_mode, 4), "\n")
+cat("  95% HPD Interval for Heritability (h²):", round(h2_ped_HPD_interval[1], 4), "-", round(h2_ped_HPD_interval[2], 4), "\n")
+
+#  Report Inbreeding Fixed Effect 
+cat("\n Inbreeding (FROH_all10_cent) Fixed Effect \n")
+
+# Pedigree Model
+cat("\nPedigree Model:\n")
+inbreeding_ped_summary <- summary(model_fecundity_poisson_ped)$solutions["FROH_all10_cent", ]
+cat("  Posterior Mean:", round(inbreeding_ped_summary["post.mean"], 4), "\n")
+cat("  95% Credible Interval:", round(inbreeding_ped_summary["l-95% CI"], 4), "-", round(inbreeding_ped_summary["u-95% CI"], 4), "\n")
+cat("  pMCMC:", round(inbreeding_ped_summary["pMCMC"], 4), "\n")
+
+
+#  Save Session Info 
+cat("\nSaving session info...\n")
+sink(file.path(output_dir, "session_info.txt"))
+sessionInfo()
+sink()
+cat("Session info saved.\n")
+
+cat("\nAnalysis complete at:", as.character(Sys.time()), "\n")
+
+```
+
+##Ch.2 Annual survival inbreeding depression
+
+```{r annual_survival_inbreeding_depression, eval = TRUE, echo = TRUE}
+
+# MCMCglmm Survival Analysis (Pedigree)
+
+# R Script for MCMCglmm Lifespan Analysis on HPC
+
+#  Load Libraries 
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(MCMCglmm)
+library(Matrix)
+library(readxl)
+library(lqmm)
+
+
+#  Set Output Directory 
+# Create a directory to save all outputs
+output_dir <- "mcmcglmm_annualsurvival_output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+  cat("Created output directory:", output_dir, "\n")
+}
+
+cat("Starting MCMCglmm analysis at:", as.character(Sys.time()), "\n")
+
+# Data Loading and Preparation
+
+#  Pedigree Preparation 
+cat("Loading and formatting Pedigree data...\n")
+SequoiaPedigree<-read_xlsx("PedigreeCorrected.xlsx")
+
+pedigree_formatted <- SequoiaPedigree %>%
+  select(id, dam, sire) %>%
+  mutate(
+    id = as.character(id),
+    dam = as.character(dam),
+    sire = as.character(sire)
+  ) %>%
+  as.data.frame()
+
+# Initialize list of ordered individuals
+ordered_ids <- character(0)
+
+# Repeat until all individuals are ordered
+while (nrow(pedigree_formatted) > 0) {
+  # Identify individuals whose sire and dam are either NA or already in the ordered list
+  eligible <- (is.na(pedigree_formatted$dam) | pedigree_formatted$dam %in% ordered_ids) &
+              (is.na(pedigree_formatted$sire) | pedigree_formatted$sire %in% ordered_ids)
+
+  # Safety check in case of cycles or missing parents
+  if (!any(eligible)) {
+    stop("Cannot resolve pedigree ordering. Possible loop or missing parent not in pedigree.")
+  }
+
+  # Add eligible individuals
+  ordered_ids <- c(ordered_ids, pedigree_formatted$id[eligible])
+
+  # Remove added individuals from working set
+  pedigree_formatted <- pedigree_formatted[!eligible, ]
+}
+
+# Reorder pedigree_formatted based on ordered_ids
+pedigree_formatted <- pedigree_formatted[match(ordered_ids, pedigree_formatted$id), ]
+rm(ped)
+
+cat("Pedigree formatted successfully.\n")
+
+
+#  Load and Prepare Trait Data 
+annual_survival_data<-read_xlsx("frohdatalong.xlsx")
+print("Preprocessing annual survival data...")
+
+annual_survival_processed <- annual_survival_data %>%
+  mutate(
+    #  Create Factors and IDs 
+    animal = factor(BirdID, levels = unique(c(pedigree_formatted$id))),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    #  Scale/Center Predictors 
+    Age_std = scale(Age)[,1], # Standardize Age
+    Age_std2 = Age_std^2,    # Squared term
+    # Center and Scale FROH_all
+    FROH_all_cent = FROH_50 - mean(FROH_50, na.rm = TRUE),
+    FROH_all10 = FROH_50 * 10,
+    FROH_all10_cent = FROH_all10 - mean(FROH_all10, na.rm = TRUE),
+    # Scale/Center MaternalAge
+    MaternalAge_std = scale(MaternalAge)[,1],
+    # Ensure Survived is numeric 0/1
+    Survived = as.numeric(Survived),
+    Survived = ifelse(Year == 2024 & LastSeenYear == 2024, NA_real_, Survived)
+  ) %>%
+  
+  #  Filter NAs 
+  filter(
+    !is.na(Survived),
+    !is.na(FROH_all10_cent),
+    !is.na(Sex),
+    !is.na(AnnualDeathRate),
+    !is.na(Age_std),
+    !is.na(Age_std2),
+    !is.na(BirthYear),
+    !is.na(animal),
+    !is.na(MaternalAge_std)
+  ) %>%
+  as.data.frame()
+
+#1418 unique BirdIDs
+length(unique(annual_survival_processed$BirdID))
+
+# Model Setup
+
+# Priors
+# R-structure (Residual): Fixed to 1 for threshold models (but using poisson here)
+# Using weakly informative priors for poisson model
+R_prior = list(V = 1, nu = 0.002)
+
+# G-structure (Random Effects)
+G_prior = list(
+    # G1 for animal (additive genetic)
+    G1 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000),
+    # G2 for birth year
+    G2 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000),
+    # G2 for bird id
+    G3 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000)
+)
+mcmc_prior <- list(R = R_prior, G = G_prior)
+
+# Set MCMC parameters
+nitt_run <- 1000000   # Total iterations
+thin_run <- 100      # Thinning interval
+burnin_run <- 100000 # Burn-in period
+
+cat("MCMC parameters set: nitt =", nitt_run, ", thin =", thin_run, ", burnin =", burnin_run, "\n")
+
+# Fixed and Random Formulas
+fixed_formula_annualsurvival <- Survived ~ FROH_all10_cent * AnnualDeathRate + Sex + Age_std + Age_std2 + MaternalAge_std
+random_formula_annualsurvival <- ~ animal + BirthYear + BirdID
+
+
+# Run MCMCglmm Model
+
+cat("Running Pedigree model...\n")
+# Pedigree genetic additive variance
+
+
+model_annualsurvival_threshold_ped <- MCMCglmm(
+     fixed = fixed_formula_annualsurvival,
+     random = random_formula_annualsurvival,
+     data = annual_survival_processed,
+     family = "threshold",
+     pedigree = pedigree_formatted,
+     prior = mcmc_prior,
+     pr = TRUE,
+     trunc = TRUE,
+     nitt = nitt_run,
+     thin = thin_run,
+     burnin = burnin_run,
+     verbose = TRUE
+     )
+
+cat("Pedigree model finished.\n")
+
+# Save Outputs and Report Key Results
+
+#  Save Model Objects 
+cat("Saving model objects...\n")
+saveRDS(model_annualsurvival_threshold_ped, file = file.path(output_dir, "model_annualsurvival_threshold_ped.rds"))
+cat("Model objects saved.\n")
+
+#  Save Model Summaries 
+cat("Saving model summary...\n")
+
+# Pedigree Summary
+sink(file.path(output_dir, "summary_annualsurvival_threshold_ped.txt"))
+summary(model_annualsurvival_threshold_ped)
+sink()
+cat("Model summariy saved.\n")
+
+
+#  Save VCV Plots for Convergence Check 
+cat("Saving VCV plot...\n")
+
+# Pedigree VCV Plot
+png(file.path(output_dir, "plot_vcv_annualsurvival_threshold_ped.png"), width = 800, height = 600)
+plot(model_annualsurvival_threshold_ped$VCV, main = "VCV Trace - Pedigree Model")
+dev.off()
+cat("VCV plots saved.\n")
+
+#  Calculate and Report Heritability 
+cat("\n Heritability Estimates \n")
+
+
+# Pedigree Model Heritability
+cat("\nPedigree Model:\n")
+expected_vcv_terms <- c("animal", "BirthYear", "BirdID", "units")
+actual_vcv_terms <- colnames(model_annualsurvival_threshold_ped$VCV)
+if (all(expected_vcv_terms %in% actual_vcv_terms)) {
+    Va_ped_posterior  <- model_annualsurvival_threshold_ped$VCV[, "animal"]    # Additive genetic
+    Vby_ped_posterior <- model_annualsurvival_threshold_ped$VCV[, "BirthYear"] # Birth year effect
+    Vpe_ped_posterior <- model_annualsurvival_threshold_ped$VCV[, "BirdID"]    # Permanent environment / identity (BirdID)
+    Vr_ped_posterior  <- model_annualsurvival_threshold_ped$VCV[, "units"]     # Residual variance (fixed to 1 for threshold)
+
+    # Total phenotypic variance on the latent scale
+    Vp_ped_posterior <- Va_ped_posterior + Vby_ped_posterior + Vpe_ped_posterior + Vr_ped_posterior
+
+    # Heritability (h²)
+    h2_ped_posterior <- Va_ped_posterior / Vp_ped_posterior
+    h2_ped_mean <- mean(h2_ped_posterior)
+    h2_ped_mode <- posterior.mode(h2_ped_posterior)
+    h2_ped_HPD  <- HPDinterval(h2_ped_posterior, prob = 0.95)
+
+    # Repeatability / Proportion of variance due to permanent environment (BirdID)
+    rep_BirdID_posterior <- Vpe_ped_posterior / Vp_ped_posterior
+    rep_BirdID_mean <- mean(rep_BirdID_posterior)
+    rep_BirdID_mode <- posterior.mode(rep_BirdID_posterior)
+    rep_BirdID_HPD  <- HPDinterval(rep_BirdID_posterior, prob = 0.95)
+
+    # Proportion of variance due to BirthYear
+    prop_Vby_posterior <- Vby_ped_posterior / Vp_ped_posterior
+    prop_Vby_mean <- mean(prop_Vby_posterior)
+    prop_Vby_mode <- posterior.mode(prop_Vby_posterior)
+    prop_Vby_HPD  <- HPDinterval(prop_Vby_posterior, prob = 0.95)
+
+    Va_posterior_sd <- sd(Va_ped_posterior) # Posterior Standard Deviation of Va
+
+    cat(" Estimates on the Latent Scale (Probit Link):\n")
+    cat("  Posterior Mean Additive Genetic Variance (Va):", round(mean(Va_ped_posterior), 4), "\n")
+    cat("  Posterior SD of Additive Genetic Variance (Va):", round(Va_posterior_sd, 4), "\n")
+    cat("  Posterior Mean Heritability (h²):", round(h2_ped_mean, 4), "\n")
+    cat("  Posterior Mode Heritability (h²):", round(h2_ped_mode, 4), "\n")
+    cat("  95% HPD Interval for Heritability (h²): [", round(h2_ped_HPD[1], 4), ",", round(h2_ped_HPD[2], 4), "]\n\n")
+
+    cat("  Posterior Mean Variance due to BirdID (Vpe):", round(mean(Vpe_ped_posterior), 4), "\n")
+    cat("  Posterior Mean Repeatability (BirdID effect):", round(rep_BirdID_mean, 4), "\n")
+    cat("  95% HPD Interval for Repeatability (BirdID): [", round(rep_BirdID_HPD[1], 4), ",", round(rep_BirdID_HPD[2], 4), "]\n\n")
+
+    cat("  Posterior Mean Variance due to BirthYear (Vby):", round(mean(Vby_ped_posterior), 4), "\n")
+    cat("  Posterior Mean Proportion Variance (BirthYear):", round(prop_Vby_mean, 4), "\n")
+    cat("  95% HPD Interval for Prop. Var. (BirthYear): [", round(prop_Vby_HPD[1], 4), ",", round(prop_Vby_HPD[2], 4), "]\n")
+    cat("  Note: Residual variance ('units') is fixed at 1 for threshold models.\n")
+
+} else {
+  cat("Could not calculate heritability/variance components. Expected VCV terms not all found.\n")
+  cat("Expected:", paste(expected_vcv_terms, collapse=", "), "\n")
+  cat("Found:", paste(actual_vcv_terms, collapse=", "), "\n")
+}
+
+#  Report Inbreeding Fixed Effect 
+cat("\n Inbreeding (FROH_all10_cent) Fixed Effect \n")
+
+# Pedigree Model
+cat("\nPedigree Model:\n")
+inbreeding_ped_summary <- summary(model_annualsurvival_threshold_ped)$solutions["FROH_all10_cent", ]
+cat("  Posterior Mean:", round(inbreeding_ped_summary["post.mean"], 4), "\n")
+cat("  95% Credible Interval:", round(inbreeding_ped_summary["l-95% CI"], 4), "-", round(inbreeding_ped_summary["u-95% CI"], 4), "\n")
+cat("  pMCMC:", round(inbreeding_ped_summary["pMCMC"], 4), "\n")
+
+
+#  Save Session Info 
+cat("\nSaving session info...\n")
+sink(file.path(output_dir, "session_info.txt"))
+sessionInfo()
+sink()
+cat("Session info saved.\n")
+
+cat("\nAnalysis complete at:", as.character(Sys.time()), "\n")
+
+
+```
+
+
+##Ch.2 Annual fecundity inbreeding depression
+
+```{r annual_fecundity_inbreeding_depression, eval = TRUE, echo = TRUE}
+# MCMCglmm Annual fecundity Analysis (Pedigree)
+
+#  Load Libraries 
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(MCMCglmm)
+library(Matrix)
+library(readxl)
+library(lqmm)
+
+
+#  Set Output Directory 
+# Create a directory to save all outputs
+output_dir <- "mcmcglmm_annualfecundity_output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+  cat("Created output directory:", output_dir, "\n")
+}
+
+cat("Starting MCMCglmm analysis at:", as.character(Sys.time()), "\n")
+
+# Data Loading and Preparation
+
+#  Pedigree Preparation 
+cat("Loading and formatting Pedigree data...\n")
+SequoiaPedigree<-read_xlsx("PedigreeCorrected.xlsx")
+
+pedigree_formatted <- SequoiaPedigree %>%
+  select(id, dam, sire) %>%
+  mutate(
+    id = as.character(id),
+    dam = as.character(dam),
+    sire = as.character(sire)
+  ) %>%
+  as.data.frame()
+
+
+# Initialize list of ordered individuals
+ordered_ids <- character(0)
+
+# Repeat until all individuals are ordered
+while (nrow(pedigree_formatted) > 0) {
+  # Identify individuals whose sire and dam are either NA or already in the ordered list
+  eligible <- (is.na(pedigree_formatted$dam) | pedigree_formatted$dam %in% ordered_ids) &
+              (is.na(pedigree_formatted$sire) | pedigree_formatted$sire %in% ordered_ids)
+
+  # Safety check in case of cycles or missing parents
+  if (!any(eligible)) {
+    stop("Cannot resolve pedigree ordering. Possible loop or missing parent not in pedigree.")
+  }
+
+  # Add eligible individuals
+  ordered_ids <- c(ordered_ids, pedigree_formatted$id[eligible])
+
+  # Remove added individuals from working set
+  pedigree_formatted <- pedigree_formatted[!eligible, ]
+}
+
+# Reorder pedigree_formatted based on ordered_ids
+pedigree_formatted <- pedigree_formatted[match(ordered_ids, pedigree_formatted$id), ]
+
+cat("Pedigree formatted successfully.\n")
+
+
+#  Load and Prepare Trait Data 
+annual_data<-read_xlsx("frohdatalong.xlsx")
+print("Preprocessing annual fecundity data...")
+
+annual_fecundity_processed <- annual_data %>%
+  mutate(
+    #  Create Factors and IDs 
+    animal = factor(BirdID, levels = unique(c(pedigree_formatted$id))),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    #  Scale/Center Predictors 
+    Age_std = scale(Age)[,1], # Standardize Age
+    Age_std2 = Age_std^2,    # Squared term
+    # Center and Scale FROH_all
+    FROH_all_cent = FROH_50 - mean(FROH_50, na.rm = TRUE),
+    FROH_all10 = FROH_50 * 10,
+    FROH_all10_cent = FROH_all10 - mean(FROH_all10, na.rm = TRUE),
+    MaternalAge_std = scale(MaternalAge)[,1], # Standardize MaternalAge
+  ) %>%
+  
+  #  Filter NAs 
+  filter(
+    !is.na(Survived),
+    !is.na(FROH_all10_cent),
+    !is.na(Sex),
+    !is.na(AnnualDeathRate),
+    !is.na(Age_std),
+    !is.na(Age_std2),
+    !is.na(BirthYear),
+    !is.na(animal),
+    !is.na(MaternalAge_std)
+  ) %>%
+  as.data.frame()
+
+#1418 unique BirdIDs
+length(unique(annual_fecundity_processed$BirdID))
+
+
+# Model Setup
+
+# Priors
+# R-structure (Residual): Fixed to 1 for threshold models (but using poisson here)
+# Using weakly informative priors for poisson model
+R_prior = list(V = 1, nu = 0.002)
+
+# G-structure (Random Effects)
+G_prior = list(
+    # G1 for animal (additive genetic)
+    G1 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000),
+    # G2 for birth year
+    G2 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000),
+    # G2 for bird id
+    G3 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = 1000)
+)
+mcmc_prior <- list(R = R_prior, G = G_prior)
+
+# Set MCMC parameters
+nitt_run <- 1000000   # Total iterations
+thin_run <- 100      # Thinning interval
+burnin_run <- 100000 # Burn-in period
+
+cat("MCMC parameters set: nitt =", nitt_run, ", thin =", thin_run, ", burnin =", burnin_run, "\n")
+
+# Fixed and Random Formulas
+fixed_formula_annualfecundity <- Offspring2024 ~ FROH_all10_cent*AnnualDeathRate + Sex + Age_std + Age_std2 + MaternalAge_std
+random_formula_annualfecundity <- ~ animal + BirthYear + BirdID
+
+
+# Run MCMCglmm Model
+
+
+cat("Running Pedigree model...\n")
+# Pedigree genetic additive variance
+
+
+model_annualfecundity_threshold_ped <- MCMCglmm(
+     fixed = fixed_formula_annualfecundity,
+     random = random_formula_annualfecundity,
+     data = annual_fecundity_processed,
+     family = "threshold",
+     pedigree = pedigree_formatted,
+     prior = mcmc_prior,
+     pr = TRUE,
+     trunc = TRUE,
+     nitt = nitt_run,
+     thin = thin_run,
+     burnin = burnin_run,
+     verbose = TRUE
+     )
+
+cat("Pedigree model finished.\n")
+
+# Save Outputs and Report Key Results
+
+#  Save Model Objects 
+cat("Saving model objects...\n")
+saveRDS(model_annualfecundity_threshold_ped, file = file.path(output_dir, "model_annualfecundity_threshold_ped.rds"))
+cat("Model objects saved.\n")
+
+#  Save Model Summaries 
+cat("Saving model summary...\n")
+
+# Pedigree Summary
+sink(file.path(output_dir, "summary_annualfecundity_threshold_ped.txt"))
+summary(model_annualfecundity_threshold_ped)
+sink()
+cat("Model summariy saved.\n")
+
+
+#  Save VCV Plots for Convergence Check 
+cat("Saving VCV plot...\n")
+
+# Pedigree VCV Plot
+png(file.path(output_dir, "plot_vcv_annualfecundity_threshold_ped.png"), width = 800, height = 600)
+plot(model_annualfecundity_threshold_ped$VCV, main = "VCV Trace - Pedigree Model")
+dev.off()
+cat("VCV plots saved.\n")
+
+#  Calculate and Report Heritability 
+cat("\n Heritability Estimates \n")
+
+
+# Pedigree Model Heritability
+cat("\nPedigree Model:\n")
+Va_ped_posterior <- model_annualfecundity_threshold_ped$VCV[, "animal"]
+Vby_ped_posterior <- model_annualfecundity_threshold_ped$VCV[, "BirthYear"]
+Vbid_ped_posterior <- model_annualfecundity_threshold_ped$VCV[, "BirdID"]
+Vr_ped_posterior <- model_annualfecundity_threshold_ped$VCV[, "units"] # Residual variance
+Vp_ped_posterior <- Va_ped_posterior + Vby_ped_posterior + Vbid_ped_posterior + Vr_ped_posterior
+Va_se <- sd(Va_grm_posterior)
+
+
+h2_ped_posterior <- Va_ped_posterior / Vp_ped_posterior
+h2_ped_mean <- mean(h2_ped_posterior)
+h2_ped_mode <- posterior.mode(h2_ped_posterior)
+h2_ped_HPD_interval <- HPDinterval(h2_ped_posterior, prob = 0.95)
+
+cat("Standard Error of Va:", round(mean(Va_se), 4), "\n")
+cat("  Posterior Mean Heritability (h²):", round(h2_ped_mean, 4), "\n")
+cat("  Posterior Mode Heritability (h²):", round(h2_ped_mode, 4), "\n")
+cat("  95% HPD Interval for Heritability (h²):", round(h2_ped_HPD_interval[1], 4), "-", round(h2_ped_HPD_interval[2], 4), "\n")
+
+#  Report Inbreeding Fixed Effect 
+cat("\n Inbreeding (FROH_all10_cent) Fixed Effect \n")
+
+# Pedigree Model
+cat("\nPedigree Model:\n")
+inbreeding_ped_summary <- summary(model_annualfecundity_threshold_ped)$solutions["FROH_all10_cent", ]
+cat("  Posterior Mean:", round(inbreeding_ped_summary["post.mean"], 4), "\n")
+cat("  95% Credible Interval:", round(inbreeding_ped_summary["l-95% CI"], 4), "-", round(inbreeding_ped_summary["u-95% CI"], 4), "\n")
+cat("  pMCMC:", round(inbreeding_ped_summary["pMCMC"], 4), "\n")
+
+
+#  Save Session Info 
+cat("\nSaving session info...\n")
+sink(file.path(output_dir, "session_info.txt"))
+sessionInfo()
+sink()
+cat("Session info saved.\n")
+
+cat("\nAnalysis complete at:", as.character(Sys.time()), "\n")
+```
+
+
+## Ch.2 GWAS
+
+A GWAS-like study of SNPs within ROH that effect lifespan. Adapted from generously annotated script by Stoffel et. al 2021: <https://github.com/mastoffel/sheep_ID/blob/master/6_alt_gwas_annual_survival_bothA_sep.R> 
+and
+<https://github.com/mastoffel/sheep_ID/blob/master/7a_gwas_postprocessing_bothA_sep.R>
+
+```{r gwas_prep, eval = FALSE, echo = FALSE, tidy=FALSE}
+#system(paste0("plink",
+# "--allow-extra-chr",
+# "--bfile mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed",
+# "--chr-set 29",
+# "--indep-pairwise 500 50 0.999",
+# "--out sw_pruned_for_pca"))
+
+#system(paste0("plink",
+# "--allow-extra-chr",
+# "--bfile mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed",
+# "--chr-set 29",
+# "--exclude sw_pruned_for_pca.prune.out",
+# "--out sw_pca_oar_pruned",
+# "--pca"))
+
+# Script to prepare data for ROH GWAS
+# This script loads trait, ROH, and PCA data, calculates FROH, and joins
+# everything into a single dataframe for GWAS analysis.
+# It is modified to only include HBD segments with HBDclass <= 4 for FROH calculation.
+
+library(lme4)
+library(tidyverse)
+library(data.table)
+library(furrr)
+library(readxl)
+library(future)
+library(purrr)
+library(tidyr)
+
+
+#  Configuration 
+# Path to the merged hbdseg data CSV file
+hbdseg_csv_path <- "combined_all_hbdseg_data_canonically_renamed.csv"
+
+# Path to the chromosome info file
+chromosome_info_path <- "chromosome_info_31.txt"
+
+# Paths to other input files
+pca_eigenvec_path <- "sw_pca_oar_pruned.eigenvec"
+pca_eigenval_path <- "sw_pca_oar_pruned.eigenval"
+pca_eigenval <- read_lines("sw_pca_oar_pruned.eigenval") %>% as.numeric() %>% plot()
+
+
+traits_excel_path <- "/Users/kiranlee/Documents/GitHub/InProgressGenomicsInbreedingSeychellesWarblers/Data/SeychellesWarblerTraitsCorrected.xlsx"
+pedigree_bayes_excel_path <- "SequoiaMasterbayesPedigree.xlsx"
+pedigree_excel_path <- "PedigreeCorrected.xlsx"
+birds_per_year_excel_path <- "BirdsPerYear.xlsx"
+offspring_csv_path <- "Offspring27032023.csv"
+offspring_2024_csv_path <- "Offspring2024.csv"
+birth_date_csv_path <- "BirthDate27032023.csv"
+
+# Output directory for processed data
+output_data_dir <- "."
+
+
+#  Load and Prepare ROH Data 
+cat("Loading ROH data from:", hbdseg_csv_path, "\n")
+
+# Read the merged hbdseg data
+roh_data <- read.csv(hbdseg_csv_path, stringsAsFactors = FALSE)
+
+# *** Filter ROH data to include only HBDclass <= 4 ***
+cat("Filtering ROH data for HBDclass <= 4...\n")
+roh_data_filtered_hbd <- roh_data %>%
+  filter(HBDclass <= 4)
+
+cat("Original ROH segments:", nrow(roh_data), "\n")
+cat("Filtered ROH segments (HBDclass <= 4):", nrow(roh_data_filtered_hbd), "\n")
+
+
+# Rename columns to match the structure expected by the original functions
+# and convert length (BP) to KB.
+roh_data_processed <- roh_data_filtered_hbd %>%
+  rename(
+    IID = id,         # Rename 'id' to 'IID'
+    CHR = chrom,      # Rename 'chrom' to 'CHR'
+    BP = length       # Rename 'length' (in BP) to 'BP' temporarily
+  ) %>%
+  mutate(
+    KB = BP / 1000,   # Convert BP to KB
+    CHR = as.numeric(CHR) # Ensure chromosome is numeric for filtering
+  ) %>%
+  select(-BP) # Remove the original BP column
+
+
+#  Chromosome Lengths 
+cat("Loading chromosome info from:", chromosome_info_path, "\n")
+chr_data <- read_delim(chromosome_info_path, delim = "\t", show_col_types = FALSE) %>%
+  rename(
+    size_BP = Length,
+    CHR_text = Part
+  ) %>%
+  mutate(
+    size_KB = size_BP / 1000,
+    CHR = as.numeric(gsub("Chromosome ", "", CHR_text))
+  ) %>%
+  filter(CHR %in% 1:29)
+
+# Calculate autosomal genome size in KB
+autosomal_genome_size <- chr_data %>%
+  filter(CHR %in% 1:29) %>% # Ensure we only sum autosomes
+  summarise(sum_KB = sum(size_KB, na.rm = TRUE)) %>%
+  as.numeric()
+
+cat("Autosomal genome size (KB):", autosomal_genome_size, "\n")
+
+#  Define FROH Calculation Functions 
+
+# Function to calculate FROH for specified length criteria
+# Now uses the filtered and processed roh_data
+calc_froh_classes <- function(roh_crit, roh_data_processed) {
+
+  roh_data_processed %>%
+    dplyr::group_by(IID) %>%
+    dplyr::filter(
+      dplyr::case_when(
+        # Use the KB column which was derived from the 'length' (BP) column
+        roh_crit == "all" ~ KB > 0
+      )
+    ) %>%
+    dplyr::summarise(KBSUM = sum(KB, na.rm = TRUE), .groups = 'drop') %>%
+    dplyr::mutate(FROH = KBSUM / autosomal_genome_size) %>%
+    dplyr::select(IID, FROH) %>%
+    dplyr::rename(ID = IID, !!paste0("FROH_", roh_crit) := FROH)
+}
+
+# Function to calculate FROH minus a specific chromosome
+# Now uses the filtered and processed roh_data
+calc_froh_minus_chr <- function(chr_num, roh_data_processed, chr_data) {
+
+  # get chromosome length and subtract from autosomal genome length
+  chr_size_kb <- chr_data %>%
+    filter(CHR == chr_num) %>%
+    pull(size_KB)
+
+  if (length(chr_size_kb) == 0) {
+      warning(paste("Chromosome", chr_num, "not found in chromosome info. Skipping."))
+      # Return an empty tibble with the correct column structure
+      return(tibble(ID = character(), !! paste0("froh_no_chr", chr_num) := numeric()))
+  }
+
+  genome_size_minus_chr <- autosomal_genome_size - chr_size_kb
+
+  # Ensure genome_size_minus_chr is not zero or negative
+  if (genome_size_minus_chr <= 0) {
+       warning(paste("Calculated genome size minus chromosome", chr_num, "is non-positive. Skipping."))
+       # Return an empty tibble with the correct column structure
+       return(tibble(ID = character(), !! paste0("froh_no_chr", chr_num) := numeric()))
+  }
+
+
+  roh_data_processed %>%
+    as_tibble() %>%
+    dplyr::group_by(IID) %>%
+    # Filter out the specified chromosome using the numeric CHR column
+    dplyr::filter(CHR != chr_num) %>%
+    dplyr::summarise(KBSUM = sum(KB, na.rm = TRUE), .groups = 'drop') %>%
+    mutate(FROH = KBSUM / genome_size_minus_chr ) %>%
+    dplyr::select(IID, FROH) %>%
+    rename(ID = IID, !! paste0("froh_no_chr", chr_num) := FROH)
+
+}
+
+#  Calculate FROH Classes and FROH minus Chromosomes 
+
+# proportion of ROH length classes in each genome.
+ROH_classes <- c( "all")
+cat("Calculating FROH for classes:", paste(ROH_classes, collapse = ", "), "\n")
+froh <- purrr::map(ROH_classes, calc_froh_classes, roh_data_processed = roh_data_processed) %>%
+  purrr::reduce(left_join, by = "ID") %>%
+  replace_na(list(FROH_all = 0)) # Handle individuals with no ROH > 0 in the filtered data
+
+cat("Calculating FROH minus individual chromosomes...\n")
+# add FROH minus each of the chromosomes as new variables
+# Pass the processed data and chr_data to the function
+froh_no_chr <- map(1:29, calc_froh_minus_chr, roh_data_processed = roh_data_processed, chr_data = chr_data) %>%
+  reduce(left_join, by = "ID")
+
+#  Combine FROH Results 
+cat("Combining FROH results...\n")
+# add to froh
+froh <- froh %>%
+  left_join(froh_no_chr, by = "ID")
+
+froh$ID <- as.character(froh$ID)
+
+#  Load and Prepare Main Trait Data 
+cat("Loading main trait data from:", traits_excel_path, "\n")
+SeychellesWarblerTraitsCorrected <- readxl::read_excel(traits_excel_path) %>%
+  mutate(BirdID = as.character(BirdID)) # Ensure BirdID is character for joins
+
+SeychellesWarblerTraitsCorrected<- SeychellesWarblerTraitsCorrected %>%
+   left_join(froh, by = c("BirdID"="ID"))
+
+# Add in variables important in explaining fitness traits
+
+#  Data Preparation 
+
+# Load and prepare BirdsPerYear data
+cat("Loading BirdsPerYear data from:", birds_per_year_excel_path, "\n")
+BirdsPerYear <- read_excel(birds_per_year_excel_path)
+BirdsPerYear$BirdID <- as.character(BirdsPerYear$BirdID)
+BirdsPerYear$Year <- BirdsPerYear$PeriodYear
+
+# Define status hierarchy
+status_priority <- c("BrF", "BrM", "H", "AB", "ABX", "SEEN2", "SEEN1", "OFL", "FL", "CH", "FLOAT", "NSA", "U", "EGG", "TBRF", "TBRM", "NS")
+
+# Create priority column
+BirdsPerYear <- BirdsPerYear %>%
+ mutate(StatusPriority = match(Status, status_priority))
+
+# Now filter:
+BirdsPerYear_filtered <- BirdsPerYear %>%
+ group_by(BirdID, FieldPeriodID) %>% # Group by BirdID and FieldPeriodID
+ slice_min(order_by = StatusPriority, with_ties = FALSE) %>% # Keep best Status within each BirdID-FieldPeriodID group
+ ungroup() %>%
+ select(-StatusPriority) # Remove helper column
+
+
+# Load Offspring data
+# Offspring <- read_csv(offspring_csv_path,col_types = cols(BirthDate = col_date(format = "%d/%m/%Y")), show_col_types = FALSE)
+cat("Loading Offspring2024 data from:", offspring_2024_csv_path, "\n")
+Offspring2024 <- read_csv(offspring_2024_csv_path,col_types = cols(BirthDate = col_date(format = "%d/%m/%Y")), show_col_types = FALSE)
+
+cat("Loading BirthDate data from:", birth_date_csv_path, "\n")
+BirthDate <- read_csv(birth_date_csv_path, col_types = cols(BirthDate = col_date(format = "%d/%m/%Y")), show_col_types = FALSE) #In query table, this is BirdID
+BirthDate <- BirthDate %>%
+ mutate(BirthYear = format(BirthDate, "%Y")) %>%
+ mutate(BirthYear = as.numeric(BirthYear))
+
+# Load Pedigree data for MaternalAge and Parent IDs
+cat("Loading Pedigree data from:", pedigree_bayes_excel_path, "\n")
+SequoiaMasterbayesPedigree<-read_xlsx(pedigree_bayes_excel_path) %>%
+  mutate(id = as.character(id)) # Ensure ID is character for joins
+
+
+# Calculate DeathYear in the main traits dataframe
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+ mutate(
+  BirthYear_num = suppressWarnings(as.numeric(BirthYear)),
+  Lifespan_num = suppressWarnings(as.numeric(Lifespan)),
+  DeathYear_calculated = ifelse(!is.na(BirthYear_num) & !is.na(Lifespan_num),
+                 BirthYear_num + Lifespan_num,
+                 NA_real_)
+ ) %>%
+ mutate(DeathYear = DeathYear_calculated) %>%
+ select(-BirthYear_num, -Lifespan_num, -DeathYear_calculated) %>%
+ mutate(BirdID = as.character(BirdID), # Ensure BirdID is character for joins
+    DeathYear = as.numeric(DeathYear))
+
+#  Calculate  Annual Death Rate
+
+# 1. Get Unique Bird Counts per Field Period
+field_period_counts <- BirdsPerYear_filtered %>%
+ group_by(FieldPeriodID) %>%
+ summarise(unique_birds = n_distinct(BirdID), .groups = 'drop') %>%
+ arrange(FieldPeriodID)
+
+# 2. Map Field Periods to Years
+fp_year_mapping <- BirdsPerYear_filtered %>%
+ select(FieldPeriodID, Year) %>%
+ distinct()
+
+# 3. Filter out counts from excluded field periods
+excluded_field_periods <- c(1, 2, 29, 33, 44, 74, 110)
+valid_field_period_counts <- field_period_counts %>%
+ filter(!(FieldPeriodID %in% excluded_field_periods))
+
+# 4. Calculate Mean Unique Birds per Year using only VALID field periods
+annual_mean_birds <- valid_field_period_counts %>%
+ inner_join(fp_year_mapping, by = "FieldPeriodID") %>%
+ group_by(Year) %>%
+ summarise(MeanUniqueBirds = mean(unique_birds, na.rm = TRUE), .groups = 'drop') %>%
+ mutate(MeanUniqueBirds = ifelse(is.nan(MeanUniqueBirds), NA_real_, MeanUniqueBirds)) %>%
+ arrange(Year)
+
+# 5. Calculate Annual Death Rate based on Year-to-Year Change in Mean Birds
+annual_death_rate_new <- annual_mean_birds %>%
+ mutate(MeanUniqueBirds_NextYear = lead(MeanUniqueBirds, order_by = Year)) %>%
+ mutate(
+  AnnualDeathRate = ifelse(
+   !is.na(MeanUniqueBirds_NextYear) & !is.na(MeanUniqueBirds) & MeanUniqueBirds > 0,
+   (MeanUniqueBirds - MeanUniqueBirds_NextYear) / MeanUniqueBirds,
+   NA_real_
+  )
+ ) %>%
+ select(Year, AnnualDeathRate) # Final table linking Year to the NEW rate
+
+# --- Verification of Rate ---
+print(" Annual Death Rates calculated from change in mean annual counts:")
+print(head(annual_death_rate_new))
+summary(annual_death_rate_new)
+
+
+#  Update SeychellesWarblerTraitsCorrected (Wide Format) 
+
+# 1. Calculate Mean Lifetime Death Rate using the NEW annual rates
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+ rowwise() %>%
+ mutate(
+  MeanLifetimeDeathRate = {
+   start_year <- BirthYear
+   end_year <- DeathYear
+   mean_rate <- NA_real_
+   if (!is.na(start_year) && !is.na(end_year) && start_year <= end_year) {
+    years_lived <- seq(from = start_year, to = end_year, by = 1)
+    # *** Use the NEW annual_death_rate_new table ***
+    relevant_rates <- annual_death_rate_new %>%
+     filter(Year %in% years_lived)
+    if (nrow(relevant_rates) > 0) {
+      calculated_mean <- mean(relevant_rates$AnnualDeathRate, na.rm = TRUE)
+      if (!is.nan(calculated_mean)) {
+       mean_rate <- calculated_mean
+      }
+    }
+   }
+   mean_rate # Return calculated rate or NA
+  }
+ ) %>%
+ ungroup()
+
+# 2. Add other columns (MaternalAge, Parent IDs)
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+ left_join(SequoiaMasterbayesPedigree %>%
+       select(id, MaternalAge), by = c("BirdID" = "id")) %>%
+ left_join(SequoiaMasterbayesPedigree %>% select(id, dam, sire), by = c("BirdID" = "id")) %>%
+ rename(DamID = dam, SireID = sire)
+
+# 3. Add death rate in the year the individual died
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+ left_join(
+  annual_death_rate_new %>% rename(DeathYear = Year, DeathYearDeathRate = AnnualDeathRate),
+  by = "DeathYear"
+ )
+
+# 4. Add death rate the year the individual was born
+
+# Join the birth year death rate into SeychellesWarblerTraitsCorrected
+SeychellesWarblerTraitsCorrected <- SeychellesWarblerTraitsCorrected %>%
+ left_join(
+  annual_death_rate_new %>%
+   rename(BirthYear = Year, BirthYearDeathRate = AnnualDeathRate),
+  by = "BirthYear"
+ )
+
+
+# 3. Apply any final filters to the wide format data if needed (e.g., Coverage)
+# SeychellesWarblerTraitsCorrected <- subset(SeychellesWarblerTraitsCorrected, Coverage > 0.01) # Example filter
+
+#  Create Annual Survival Dataframe (Long Format) 
+
+# 1. Prepare core survival structure (BirdID, Year, Age, Survived)
+df_survival_core <- SeychellesWarblerTraitsCorrected %>%
+ select(BirdID, BirthYear, DeathYear) %>%
+ mutate(across(everything(), as.numeric)) %>%
+ filter(!is.na(BirthYear), !is.na(DeathYear), DeathYear >= BirthYear) %>%
+ mutate(Year = map2(BirthYear, DeathYear, seq), BirdID = as.character(BirdID)) %>%
+ unnest(Year) %>%
+ mutate(Age = Year - BirthYear) %>%
+ group_by(BirdID) %>%
+ mutate(
+  Survived = ifelse(Year < DeathYear, 1, 0) # alive before death year = 1, death year = 0
+ ) %>%
+ ungroup() %>%
+ select(BirdID, Year, Age, Survived) %>%
+ mutate(Year = as.numeric(Year))
+
+
+# 2. Merge survival structure with all bird-level covariates
+df_annual_survival_base <- left_join(
+  df_survival_core,
+  # Select all columns EXCEPT potentially overlapping ones like Age, Year if they exist differently
+  SeychellesWarblerTraitsCorrected %>% select(-any_of(c("Age", "Year", "Survived"))),
+  by = "BirdID"
+ )
+
+# 3. Merge the AnnualDeathRate into the long format dataframe
+df_annual_survival_final <- left_join(
+  df_annual_survival_base,
+  annual_death_rate_new, # Use the NEW rate table
+  by = "Year"
+ )
+
+# 4. Add annual offspring counts
+offspring_with_year <- Offspring2024 %>%
+ left_join(BirthDate %>% select(OffID = BirdID, HatchYear = BirthYear), by = "OffID") %>%
+ filter(!is.na(Parent), !is.na(HatchYear), Confidence > 80) # Adjust Confidence if needed
+
+offspring_counts <- offspring_with_year %>%
+ group_by(Parent = as.character(Parent), Year = as.numeric(HatchYear)) %>% # Ensure types match for join
+ summarise(Offspring2024 = n(), .groups = "drop")
+
+df_annual_survival_final <- df_annual_survival_final %>%
+ left_join(offspring_counts %>% rename(BirdID = Parent), by = c("BirdID", "Year")) %>%
+ mutate(Offspring2024 = replace_na(Offspring2024, 0L)) # Replace NA offspring counts with 0
+
+#  Output 
+# Ensure directory exists or adjust path as needed
+output_dir <- "."
+
+write.xlsx(df_annual_survival_final, file = file.path(output_data_dir, "frohdatalongGWAS.xlsx"), quote = FALSE)
+write.xlsx(SeychellesWarblerTraitsCorrected, file = file.path(output_data_dir, "frohdataGWAS.xlsx"), quote = FALSE)
+
+cat("Data preparation script finished.\n")
+
+```
+
+```{r gwas}
+
+# This script performs a Genome-Wide Association Study (GWAS) for annual survival
+# It  tests the effect of a SNP being in a Run of Homozygosity (ROH)
+# on survival, while controlling for additive SNP effects, sex, age, environmental
+# factors, overall genomic inbreeding (FROH), and population structure (PCs).
+# Needs to be run as an array job. 1000 SNPs takes one hour.
+
+# Output:
+# For every 1000 SNPs, an .rds file is saved containing a data frame of
+# model results (coefficients, p-values, etc.) for each SNP term, joined with
+# SNP map information (chromosome, position, alleles).
+#
+
+# Input files:
+#   - Trait data (Excel: frohdatalongGWAS.xlsx)
+#   - PCA data for population structure (Text: sw_pca_pruned.txt)
+#   - ROH segment data (CSV: combined_all_hbdseg_data_canonically_renamed.csv)
+#   - PLINK genotype files (BED/BIM/FAM format)
+
+#  0. Load Libraries 
+print(paste("Script started at:", Sys.time()))
+suppressPackageStartupMessages({
+  library(lme4)
+  library(tidyverse)    # Includes dplyr, tidyr, ggplot2, readr, purrr, tibble, stringr, forcats
+  library(broom.mixed)  # For tidying mixed model outputs
+  library(snpStats)     # For reading PLINK files
+  library(data.table)   # For fread and efficient data manipulation (e.g., ROH processing)
+  library(furrr)        # For parallel mapping with future
+  library(readxl)       # For reading Excel files
+  library(nloptr)       # For the nloptr optimizer used in glmer
+})
+
+#  1. Configuration & Parameters 
+# GWAS Run Parameters
+snps_per_part <- 1000 # Number of SNPs to process in each parallel job/part
+
+# Input File Paths (modify as needed)
+trait_data_file   <- "frohdatalongGWAS.xlsx"
+pca_file_path     <- "sw_pca_pruned.txt" # Principal Components for population structure to capture additive genetic effects
+roh_segments_file <- "combined_all_hbdseg_data_canonically_renamed.csv" # Pre-calculated ROH segments from RZooRoH
+plink_prefix      <- "mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed" # PLINK file prefix
+
+# Output Directory
+output_dir <- "output" # Directory to save result files for each part
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+}
+
+#  2. Handle Command Line Arguments for Array Job 
+# This allows the script to be run as part of an array job (e.g., on a cluster)
+# where each job processes a different 'part' of the SNPs.
+part_inp <- commandArgs(trailingOnly = TRUE)
+if (length(part_inp) > 0 && !is.na(suppressWarnings(as.numeric(part_inp[[1]])))) {
+  part <- as.numeric(part_inp[[1]])
+} else {
+  part <- 1 # Default to part 1 for local testing or if no argument is provided
+  warning("No valid array task ID provided via commandArgs. Running for default part 1 for testing.", immediate. = TRUE)
+}
+print(paste("R_SCRIPT: Processing GWAS for part:", part))
+
+#  3. Load and Preprocess Phenotype (Trait) Data 
+print("R_SCRIPT: Loading and preprocessing trait data...")
+if (!file.exists(trait_data_file)) stop("Trait data file not found: ", trait_data_file)
+annual_survival_data_raw <- read_excel(trait_data_file, .name_repair = "minimal") %>%
+  mutate(BirdID = as.character(BirdID)) %>%
+  filter(BirdID != "6781") 
+
+# Check for essential columns in trait data
+required_trait_cols <- c("BirdID", "Survived", "Sex", "Age", "BirthYear",
+                         "LastSeenYear", "MaternalAge", "AnnualDeathRate",
+                         paste0("froh_no_chr", 1)) # Check for at least one froh_no_chr column
+missing_trait_cols <- setdiff(required_trait_cols, colnames(annual_survival_data_raw))
+if (length(missing_trait_cols) > 0) {
+  stop(paste("R_SCRIPT: ERROR - Missing essential columns in trait data:", paste(missing_trait_cols, collapse=", ")))
+}
+
+annual_survival_data_raw <- read_excel(trait_data_file, .name_repair = "minimal") %>%
+  mutate(BirdID = as.character(BirdID)) %>%
+  filter(BirdID != "6781")
+
+annual_survival_data_intermediate <- annual_survival_data_raw %>%
+  mutate(
+    Survived = as.numeric(Survived),
+    LastSeenYear = as.numeric(LastSeenYear),
+    Year = as.numeric(Year),
+    Sex = factor(Sex),
+    BirthYear = factor(BirthYear),
+    Age = as.numeric(Age),
+    FROH_all = as.numeric(FROH_all),
+    MaternalAge = as.numeric(MaternalAge),
+    AnnualDeathRate = as.numeric(AnnualDeathRate)
+  )
+
+# Unsure of survival of birds last seen 2024
+annual_survival_data_censored <- annual_survival_data_intermediate %>%
+  mutate(
+    Survived = ifelse(Year == 2024 & LastSeenYear == 2024, NA_real_, Survived)
+  )
+print(paste("R_SCRIPT: Number of rows where Survived was set to NA based on Year==2024 & LastSeenYear==2024:",
+            sum(annual_survival_data_intermediate$Year == 2024 &
+                annual_survival_data_intermediate$LastSeenYear == 2024 &
+                is.na(annual_survival_data_censored$Survived) &
+                !is.na(annual_survival_data_intermediate$Survived) # Count only newly NA'd
+                )))
+
+
+# Proceed with other mutations and filtering
+annual_survival_processed <- annual_survival_data_censored %>%
+  mutate(
+    id = as.character(BirdID), # Standardize ID column name
+    LifeStage = factor(ifelse(Age == 0, "Non-adult", "Adult"), levels = c("Adult", "Non-adult")),
+    Age_std = as.numeric(scale(Age)),
+    Age_std2 = Age_std^2,
+    FROH_all10_cent = FROH_all * 10 - mean(FROH_all * 10, na.rm = TRUE),
+    MaternalAge_std = as.numeric(scale(MaternalAge)),
+  ) %>%
+  filter(
+    !is.na(Survived),
+    !is.na(Sex),
+    !is.na(AnnualDeathRate),
+    !is.na(Age_std),
+    !is.na(Age_std2),
+    !is.na(MaternalAge_std), 
+    !is.na(BirthYear),
+    !is.na(id)
+  ) %>%
+  dplyr::select(
+    id, Survived, Sex, AnnualDeathRate, Age_std, Age_std2, MaternalAge_std,
+    BirthYear,
+    starts_with("froh_no_chr") # Keep all froh_no_chr columns
+  ) %>%
+  as.data.frame()
+
+if (nrow(annual_survival_processed) == 0) {
+  stop("R_SCRIPT: ERROR - Trait data is empty after preprocessing and filtering.")
+}
+print(paste("R_SCRIPT: Trait data processed. Rows:", nrow(annual_survival_processed), "Individuals:", n_distinct(annual_survival_processed$id)))
+
+froh_cols_present <- names(annual_survival_processed)[grepl("^froh_no_chr", names(annual_survival_processed))]
+if (length(froh_cols_present) == 0) {
+  stop("R_SCRIPT: ERROR - No 'froh_no_chrX' columns found in processed survival data. These are needed for covariates.")
+}
+print(paste("R_SCRIPT:", length(froh_cols_present), "'froh_no_chrX' columns found and kept."))
+
+#  4. Load PCA Data (for population structure correction) 
+print("R_SCRIPT: Loading PCA data...")
+if (!file.exists(pca_file_path)) stop("PCA file not found: ", pca_file_path)
+pcs <- read_delim(pca_file_path, delim = " ", col_names = TRUE, show_col_types = FALSE, comment="#") %>%
+  mutate(id = as.character(IID)) %>% # Assuming PCA file has IID, standardizing to 'id'
+  dplyr::select(id, starts_with("PC")) # Select id and all PC columns (e.g. pc1, pc2...pc5)
+# If specific PCs are needed, e.g. pc1 to pc5:
+# pcs <- pcs %>% dplyr::select(id, pc1, pc2, pc3, pc4, pc5)
+
+if (nrow(pcs) == 0) stop("PCA data is empty.")
+print(paste("R_SCRIPT: PCA data loaded. Rows:", nrow(pcs), "Individuals:", n_distinct(pcs$id)))
+
+#  5. Load ROH (HBD) Segment Data 
+# This data contains start/end positions of ROH segments for each individual.
+print("R_SCRIPT: Loading ROH (HBD) segment data...")
+if (!file.exists(roh_segments_file)) stop("ROH segments file not found: ", roh_segments_file)
+hbd_segments_dt <- fread(roh_segments_file, check.names = FALSE) %>% # Using fread for speed
+  mutate(id = as.character(id), # Ensure ID is character
+         chrom = as.character(chrom)) # Ensure chromosome is character for matching
+required_hbd_cols <- c("id", "chrom", "start_pos", "end_pos")
+if (!all(required_hbd_cols %in% colnames(hbd_segments_dt))) {
+  stop(paste("R_SCRIPT: ERROR - Missing essential columns in HBD/ROH data. Expected:", paste(required_hbd_cols, collapse=", ")))
+}
+setkey(hbd_segments_dt, id, chrom, start_pos, end_pos) # Set keys for efficient overlap queries if using data.table methods later
+print(paste("R_SCRIPT: ROH (HBD) data loaded. Rows:", nrow(hbd_segments_dt)))
+# Consider checking if 'chrom' format in HBD data (e.g., "1" vs "chr1") matches PLINK BIM. Assuming numeric for now.
+
+#  6. Load Genotype Data (PLINK files) and SNP Map 
+print("R_SCRIPT: Loading genotype data from PLINK files...")
+bed_file <- paste0(plink_prefix, ".bed"); bim_file <- paste0(plink_prefix, ".bim"); fam_file <- paste0(plink_prefix, ".fam")
+if (!file.exists(bed_file)) stop("BED file not found: ", bed_file)
+if (!file.exists(bim_file)) stop("BIM file not found: ", bim_file)
+if (!file.exists(fam_file)) stop("FAM file not found: ", fam_file)
+
+full_sample_plink <- read.plink(bed_file, bim_file, fam_file)
+snp_map_plink <- as_tibble(full_sample_plink$map) %>%
+  mutate(chromosome = as.character(chromosome)) # Ensure chromosome is character for matching with HBD data
+
+expected_map_cols <- c("chromosome", "snp.name", "position", "allele.1", "allele.2") # snpStats standard
+if (!all(expected_map_cols %in% colnames(snp_map_plink))) {
+  stop(paste("R_SCRIPT: ERROR - PLINK map data (from BIM) is missing expected columns. Expected:",
+             paste(expected_map_cols, collapse=", "), "Found:", paste(colnames(snp_map_plink), collapse=", ")))
+}
+
+
+n_total_snps <- nrow(snp_map_plink)
+if (n_total_snps == 0) stop("No SNPs found in PLINK map data.")
+print(paste("R_SCRIPT: Genotype data loaded. Total SNPs:", n_total_snps, "Total Samples:", nrow(full_sample_plink$fam)))
+
+#  7. Define SNP Chunks for Parallel Processing 
+all_snps_indices <- 1:n_total_snps
+# Ceiling is used to ensure the last part gets any remaining SNPs
+all_parts_indices_list <- split(all_snps_indices, ceiling(seq_along(all_snps_indices) / snps_per_part))
+
+if (part > length(all_parts_indices_list) || part < 1) {
+  stop(paste("R_SCRIPT: ERROR - Selected part", part, "is out of bounds. Max part is", length(all_parts_indices_list)))
+}
+snp_indices_for_this_part <- all_parts_indices_list[[part]]
+snps_map_sub <- snp_map_plink[snp_indices_for_this_part, ] # Subset of SNP map for this job part
+if (nrow(snps_map_sub) == 0 && n_total_snps > 0) stop(paste("Error: snps_map_sub is empty for part", part, "but total SNPs > 0"))
+print(paste("R_SCRIPT: This job (part", part, ") will process", nrow(snps_map_sub), "SNPs."))
+
+#  8. Prepare Genotype and ROH Status Data for the Current SNP Chunk 
+# Extract genotype matrix for the current subset of SNPs
+geno_matrix_full <- full_sample_plink$genotypes
+geno_ids_from_fam <- as.character(full_sample_plink$fam$member) # IDs from FAM file
+
+# Check for ID overlap between phenotype and genotype data
+common_ids_pheno_geno <- intersect(annual_survival_processed$id, geno_ids_from_fam)
+if (length(common_ids_pheno_geno) == 0) stop("R_SCRIPT: ERROR - No common IDs between phenotype and genotype data. Check ID formats.")
+if (length(common_ids_pheno_geno) < 0.5 * nrow(annual_survival_processed)) {
+  warning(paste0("R_SCRIPT: WARNING - Low overlap (", length(common_ids_pheno_geno), "/", nrow(annual_survival_processed),
+                 ") between phenotype IDs and genotype IDs. Check ID consistency."), immediate. = TRUE)
+}
+
+# Convert genotype data for the SNP subset to a numeric matrix (0, 1, 2 for allele counts)
+# then to a tibble.
+geno_sub_df <- tibble()
+if (nrow(snps_map_sub) > 0) {
+  geno_sub_raw <- as(geno_matrix_full[, snps_map_sub$snp.name], Class = "numeric")
+  geno_sub_df <- as_tibble(geno_sub_raw, .name_repair = "minimal")
+  if (ncol(geno_sub_df) == length(snps_map_sub$snp.name)) {
+    colnames(geno_sub_df) <- snps_map_sub$snp.name
+  } else if (ncol(geno_sub_df) == 1 && length(snps_map_sub$snp.name) == 1) {
+    colnames(geno_sub_df) <- snps_map_sub$snp.name[1]
+  } else if (length(snps_map_sub$snp.name) == 0 && ncol(geno_sub_df) == 0) {
+    # No SNPs in this part, geno_sub_df remains empty
+  } else {
+    warning("R_SCRIPT: WARNING - Mismatch in number of SNP columns from genotype conversion.", immediate. = TRUE)
+  }
+  geno_sub_df$id <- geno_ids_from_fam # Add individual IDs
+  geno_sub_df <- geno_sub_df %>% dplyr::select(id, all_of(snps_map_sub$snp.name)) # Ensure correct order and selection
+}
+
+
+# Function to determine if a SNP is in an ROH for each individual
+roh_status_per_snp_for_individuals <- function(snp_chromosome, snp_position, hbd_data, individual_ids) {
+  # Filter HBD segments for the current chromosome once
+  hbd_for_chr <- hbd_data[chrom == snp_chromosome]
+  
+  if (nrow(hbd_for_chr) == 0) { # No ROH segments on this chromosome for anyone
+    roh_status_vector <- rep(0, length(individual_ids))
+  } else {
+    # Efficiently check for overlaps for all individuals on this chromosome
+    # Create a data.table for the SNP position
+    snp_dt <- data.table(chrom = snp_chromosome, start_pos_snp = snp_position, end_pos_snp = snp_position, key = "chrom,start_pos_snp,end_pos_snp")
+    # Find overlaps between all individual ROHs on this chromosome and the SNP position
+    overlaps <- foverlaps(snp_dt, hbd_for_chr, by.x = c("chrom", "start_pos_snp", "end_pos_snp"),
+                          by.y = c("chrom", "start_pos", "end_pos"), type = "any", mult = "first", nomatch = 0L)
+    # `overlaps` now contains rows only for individuals who have an ROH covering the SNP
+    ids_in_roh <- unique(overlaps$id)
+    roh_status_vector <- as.numeric(individual_ids %in% ids_in_roh)
+  }
+  names(roh_status_vector) <- individual_ids
+  return(roh_status_vector)
+}
+
+
+print("R_SCRIPT: Calculating ROH status per SNP for individuals in this part...")
+# IDs present in both processed survival data and current genotype subset
+relevant_ids_for_roh_calc <- intersect(unique(annual_survival_processed$id), unique(geno_sub_df$id))
+
+roh_df_part <- tibble(id = relevant_ids_for_roh_calc) # Initialize with IDs
+if (nrow(snps_map_sub) > 0 && length(relevant_ids_for_roh_calc) > 0) {
+  list_of_roh_cols <- vector("list", nrow(snps_map_sub))
+  for (i in 1:nrow(snps_map_sub)) {
+    snp_info_row <- snps_map_sub[i, ]
+    # Using the improved roh_status_per_snp_for_individuals with foverlaps
+    roh_vector <- roh_status_per_snp_for_individuals(
+      snp_chromosome = as.character(snp_info_row$chromosome), # Ensure character for matching
+      snp_position = as.numeric(snp_info_row$position),
+      hbd_data = hbd_segments_dt, # Pass the full hbd_segments_dt
+      individual_ids = relevant_ids_for_roh_calc
+    )
+    list_of_roh_cols[[i]] <- roh_vector
+  }
+  # Combine all ROH status vectors into a data frame
+  if (length(list_of_roh_cols) > 0) {
+    roh_matrix_for_df <- do.call(cbind, list_of_roh_cols)
+    roh_status_df_this_part <- as_tibble(roh_matrix_for_df)
+    colnames(roh_status_df_this_part) <- paste0("roh_", snps_map_sub$snp.name)
+    roh_df_part <- bind_cols(roh_df_part, roh_status_df_this_part) # Add to the ID column
+  }
+} else {
+  warning("R_SCRIPT: WARNING - No SNPs in this part or no relevant IDs for ROH calculation. ROH DF will be minimal.", immediate. = TRUE)
+}
+print(paste("R_SCRIPT: ROH status calculated. Dimensions of roh_df_part:", paste(dim(roh_df_part), collapse="x")))
+
+
+#  9. Join all Data Sources for GWAS Model 
+print("R_SCRIPT: Joining all data sources for GWAS model...")
+# Start with individuals who have phenotype data
+annual_survival_gwas <- annual_survival_processed %>%
+  filter(id %in% common_ids_pheno_geno) %>% # Ensure IDs are in genotype data
+  left_join(pcs, by = "id") %>%
+  left_join(geno_sub_df, by = "id") # geno_sub_df contains only SNPs for this part
+
+# Join ROH data, ensuring IDs match. roh_df_part might have fewer rows if some individuals had no ROHs.
+# A left_join ensures all individuals from annual_survival_gwas are kept; NAs if no ROH info.
+if (nrow(roh_df_part) > 0 && "id" %in% names(roh_df_part)) {
+  annual_survival_gwas <- annual_survival_gwas %>% left_join(roh_df_part, by = "id")
+}
+
+annual_survival_gwas <- as_tibble(annual_survival_gwas)
+print(paste("R_SCRIPT: Data joined. Dimensions of annual_survival_gwas:", paste(dim(annual_survival_gwas), collapse="x")))
+if (nrow(annual_survival_gwas) == 0) {
+  stop("R_SCRIPT: ERROR - annual_survival_gwas dataframe is empty after joins. Check ID matching across files.")
+}
+
+#  10. Create Dummy Variables for ROH x Genotype Interaction 
+# These terms (roh_0_SNPNAME, roh_2_SNPNAME) represent the effect of being in an ROH
+# specifically when homozygous for allele 0 (AA) or allele 2 (BB) at that SNP.
+# Genotypes (0, 1, 2) are typically counts of the second allele in the BIM file (allele.2).
+print("R_SCRIPT: Creating dummy variables for ROH x Genotype interaction...")
+current_snp_names_in_part <- snps_map_sub$snp.name
+for (snp_col_name in current_snp_names_in_part) {
+  roh_status_col_name <- paste0("roh_", snp_col_name) # e.g., roh_chr1:12345
+  
+  if (!snp_col_name %in% names(annual_survival_gwas)) {
+    warning(paste0("R_SCRIPT: SNP column '", snp_col_name, "' not found in joined data. Skipping dummy vars."), immediate. = TRUE)
+    next
+  }
+  # If an individual has no ROH data for a SNP (e.g. not in roh_df_part), their ROH status will be NA.
+  # We should treat NA ROH status as not being in ROH (0) for these interaction terms.
+  if (!roh_status_col_name %in% names(annual_survival_gwas)) {
+    # This case should be rare if roh_df_part was constructed for all snps_map_sub
+    # but if an ID from annual_survival_gwas was not in relevant_ids_for_roh_calc, it might happen.
+    annual_survival_gwas[[roh_status_col_name]] <- 0 # Default to 0 if column is missing
+  }
+  # Replace NA in ROH status column with 0 (not in ROH)
+  annual_survival_gwas[[roh_status_col_name]][is.na(annual_survival_gwas[[roh_status_col_name]])] <- 0
+  
+  current_snp_genotypes <- annual_survival_gwas[[snp_col_name]]
+  current_roh_status    <- annual_survival_gwas[[roh_status_col_name]]
+  
+  # roh_0_SNP: in ROH (status=1) AND genotype is 0 (homozygous for allele.1)
+  annual_survival_gwas[[paste0("roh_0_", snp_col_name)]] <-
+    ifelse(!is.na(current_snp_genotypes) & current_snp_genotypes == 0 & current_roh_status == 1, 1, 0)
+  # roh_2_SNP: in ROH (status=1) AND genotype is 2 (homozygous for allele.2)
+  annual_survival_gwas[[paste0("roh_2_", snp_col_name)]] <-
+    ifelse(!is.na(current_snp_genotypes) & current_snp_genotypes == 2 & current_roh_status == 1, 1, 0)
+  
+  annual_survival_gwas[[roh_status_col_name]] <- NULL # Remove the original roh_SNPNAME column
+}
+print("R_SCRIPT: Dummy variables for ROH interactions created.")
+
+
+#  11. Define Optimizer for glmer (nloptwrap with BOBYQA) 
+nlopt_optimizer_setup <- function(par, fn, lower, upper, control) {
+  .nloptr_environment <- new.env() # Create a new environment for this optimizer instance
+  .nloptr_environment$res <- nloptr::nloptr(
+    x0 = par, eval_f = fn, lb = lower, ub = upper,
+    opts = list(algorithm = "NLOPT_LN_BOBYQA", print_level = 0,
+                maxeval = 1000, xtol_abs = 1e-6, ftol_abs = 1e-6)
+  )
+  list(par = .nloptr_environment$res$solution, fval = .nloptr_environment$res$objective,
+       conv = if (.nloptr_environment$res$status > 0 && .nloptr_environment$res$status < 5) 0 else .nloptr_environment$res$status, # Standard lme4 convergence codes
+       message = .nloptr_environment$res$message)
+}
+
+#  12. Define GWAS Model Function (to be run for each SNP) 
+run_gwas_snp <- function(snp_name, dataset, snp_map_for_part) {
+  # Get chromosome for this SNP to select the correct froh_no_chrX covariate
+  snp_info_row <- snp_map_for_part[snp_map_for_part$snp.name == snp_name, ]
+  if (nrow(snp_info_row) == 0 || is.na(snp_info_row$chromosome[1])) {
+    warning(paste("R_SCRIPT: Chromosome info not found in snp_map_for_part for SNP:", snp_name), immediate. = TRUE)
+    # Return a tibble indicating error, matching expected output structure
+    return(tibble(term = snp_name, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_,
+                  model_status = "error_snp_chr_not_found_in_map_subset", n_obs = NA_integer_, time=NA_real_))
+  }
+  current_chr_num <- snp_info_row$chromosome[1] # Assumes chromosome is already numeric or simple character form like "1", "2"
+  froh_no_chr_covariate <- paste0("froh_no_chr", current_chr_num)
+  
+  if (!froh_no_chr_covariate %in% names(dataset)) {
+    warning(paste0("R_SCRIPT: Covariate '", froh_no_chr_covariate, "' for SNP '", snp_name, "' not found in dataset."), immediate. = TRUE)
+    return(tibble(term = snp_name, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_,
+                  model_status = paste0("error_missing_covariate_", froh_no_chr_covariate), n_obs = NA_integer_, time=NA_real_))
+  }
+  
+  # Construct model formula dynamically. Backticks ` ` handle special characters in SNP names.
+  # Fixed effects:
+  fixed_effects_base <- "1 + Sex + AnnualDeathRate + Age_std + Age_std2 + MaternalAge_std"
+  fixed_effects_pcs <- paste0("pc", 1:5, collapse = " + ") # Assuming 5 PCs, adjust if different
+  fixed_effects_snp_terms <- paste0("`", snp_name, "`", " + `", paste0("roh_0_", snp_name), "`", " + `", paste0("roh_2_", snp_name), "`")
+  
+  formula_str <- paste0("Survived ~ ", fixed_effects_base, " + ", froh_no_chr_covariate,
+                        " + ", fixed_effects_pcs, " + ", fixed_effects_snp_terms,
+                        " + (1|id) + (1|BirthYear)") # Random effects
+  model_formula <- as.formula(formula_str)
+  
+  # Check for sufficient data after considering all model variables
+  model_vars_needed <- all.vars(model_formula)
+  # Check if all variables are in the dataset
+  if(!all(model_vars_needed %in% names(dataset))){
+    missing_model_vars <- setdiff(model_vars_needed, names(dataset))
+    warning(paste0("R_SCRIPT: For SNP ", snp_name, ", model variables missing from dataset: ", paste(missing_model_vars, collapse=", ")), immediate. = TRUE)
+    return(tibble(term = snp_name, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_,
+                  model_status = "error_missing_model_vars_in_dataset", n_obs = NA_integer_, time=NA_real_))
+  }
+  # Count complete cases for variables in the current model
+  n_complete_cases <- sum(complete.cases(dataset[, model_vars_needed, drop=FALSE]))
+  
+  if (n_complete_cases < 50) { # Minimum observations threshold
+    warning(paste0("R_SCRIPT: Insufficient complete cases (", n_complete_cases, ") for SNP: ", snp_name, ". Skipping model."), immediate. = TRUE)
+    return(tibble(term = snp_name, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_,
+                  model_status = "skipped_insufficient_data", n_obs = n_complete_cases, time=NA_real_))
+  }
+  
+  # Run the mixed model
+  model_fit <- NULL
+  elapsed_time <- system.time({
+    model_fit <- tryCatch({
+      glmer(formula = model_formula, data = dataset, family = binomial(link = "logit"),
+            control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE, # calc.derivs=FALSE can speed up
+                                   optCtrl = list(optimizer_function = nlopt_optimizer_setup)))
+    }, error = function(e) {
+      warning(paste0("R_SCRIPT: Error in glmer for SNP '", snp_name, "': ", conditionMessage(e)), immediate. = TRUE)
+      return(NULL) # Return NULL if model fails
+    })
+  })
+  
+  # Process model output
+  if (is.null(model_fit)) {
+    return(tibble(term = snp_name, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_,
+                  model_status = "error_in_glmer_fit", n_obs = n_complete_cases, time = as.numeric(elapsed_time[3])))
+  } else {
+    tidy_results <- broom.mixed::tidy(model_fit, conf.int = FALSE, effects = "fixed") # Only fixed effects needed for GWAS results table
+    # Check for convergence messages
+    conv_msgs <- summary(model_fit)$optinfo$conv$lme4$messages
+    tidy_results$model_status <- if (is.null(conv_msgs)) "success" else paste("convergence_issue:", paste(conv_msgs, collapse="; "))
+    tidy_results$n_obs <- n_complete_cases # Use actual complete cases for this model
+    tidy_results$time <- as.numeric(elapsed_time[3])
+    return(tidy_results)
+  }
+}
+# Wrap run_gwas_snp in purrr::safely to catch any unexpected errors during the function call itself
+safe_run_gwas_snp <- purrr::safely(run_gwas_snp, otherwise = NULL, quiet = FALSE)
+
+
+#  13. Run GWAS Models in Parallel for SNPs in the Current Part 
+snp_names_for_this_part <- snps_map_sub$snp.name
+print(paste("R_SCRIPT: Starting GWAS analysis for", length(snp_names_for_this_part), "SNPs in part", part))
+
+# Determine number of workers for parallel processing
+# Uses SLURM_CPUS_PER_TASK if on a Slurm cluster, otherwise defaults to 2.
+num_cpus_env <- Sys.getenv("SLURM_CPUS_PER_TASK")
+num_workers <- if (nzchar(num_cpus_env) && !is.na(suppressWarnings(as.integer(num_cpus_env)))) as.integer(num_cpus_env) else 2
+if (is.na(num_workers) || num_workers < 1) num_workers <- 2 # Fallback
+print(paste("R_SCRIPT: Setting up parallel plan with", num_workers, "workers (future::multisession)."))
+plan(multisession, workers = num_workers)
+# Set max size for globals that can be exported to workers. Adjust if large objects are needed by each worker.
+options(future.globals.maxSize = 2 * 1024^3) # 2 GB limit
+
+# Run models in parallel using future_map
+# .progress = TRUE provides a progress bar (useful for interactive runs)
+# .options = furrr_options(seed = TRUE) ensures reproducibility if any random processes were involved
+all_model_outputs_list <- future_map(
+  snp_names_for_this_part,
+  ~ safe_run_gwas_snp(snp_name = .x,
+                      dataset = annual_survival_gwas, # The main dataset with all covariates
+                      snp_map_for_part = snps_map_sub), # SNP map for this chunk (for chr lookup)
+  .options = furrr_options(seed = TRUE, scheduling = Inf), # scheduling = Inf can be good for many short tasks
+  .progress = TRUE
+)
+print("R_SCRIPT: Parallel processing of SNPs finished.")
+plan(sequential) # Clean up parallel backend
+
+#  14. Process and Save Results for This Part 
+print("R_SCRIPT: Processing and saving results for this part...")
+results_to_compile <- list()
+
+for (i in seq_along(all_model_outputs_list)) {
+  current_snp_name <- snp_names_for_this_part[i]
+  model_output_item <- all_model_outputs_list[[i]]
+  
+  if (!is.null(model_output_item$result)) { # Output from safe_run_gwas_snp if successful
+    single_snp_df <- as_tibble(model_output_item$result)
+    # Filter for SNP-specific terms of interest (additive, roh_0, roh_2)
+    # Terms from broom.mixed::tidy are backticked if they contain special characters or match keywords
+    # The comparison terms here must exactly match those in the tidy_results$term column
+    terms_of_interest_for_snp <- c(
+      paste0("`", current_snp_name, "`"),
+      paste0("`roh_0_", current_snp_name, "`"),
+      paste0("`roh_2_", current_snp_name, "`")
+    )
+    # Include rows that are either one of the terms of interest OR an error/skipped status row for that SNP
+    # (which would have 'term' as just snp_name and 'model_status' indicating issue)
+    filtered_df_for_snp <- single_snp_df %>%
+      filter(term %in% terms_of_interest_for_snp |
+               (term == current_snp_name & grepl("error_|skipped_", model_status, ignore.case=TRUE)))
+    
+    if (nrow(filtered_df_for_snp) > 0) {
+      results_to_compile[[length(results_to_compile) + 1]] <- filtered_df_for_snp
+    } else if (!any(grepl("error_|skipped_", single_snp_df$model_status, ignore.case=TRUE))) {
+      # If model was 'success' but no terms of interest were found (should not happen with current logic)
+      warning(paste0("R_SCRIPT: Model for SNP '", current_snp_name, "' ran but no terms of interest found in output after filtering."), immediate. = TRUE)
+    }
+  } else if (!is.null(model_output_item$error)) { # Error captured by purrr::safely
+    warning(paste0("R_SCRIPT: An unexpected error occurred processing SNP '", current_snp_name, "': ", conditionMessage(model_output_item$error)), immediate. = TRUE)
+    # Create a placeholder row for this SNP indicating the error
+    error_df <- tibble(term = current_snp_name, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_,
+                       model_status = "error_in_safe_run_wrapper", n_obs = NA_integer_, time=NA_real_)
+    results_to_compile[[length(results_to_compile) + 1]] <- error_df
+  }
+}
+
+if (length(results_to_compile) > 0) {
+  final_results_df_part <- bind_rows(results_to_compile)
+  
+  # Add SNP map information (chromosome, position, alleles)
+  # The 'term' column contains backticks; 'snp.name.extracted' is cleaned for joining.
+  final_results_df_part <- final_results_df_part %>%
+    mutate(
+      term_no_backticks = gsub("`", "", term),
+      # If term is already an error placeholder (just snp_name), use it directly.
+      # Otherwise, extract base SNP name from SNP-related terms.
+      snp.name.extracted = case_when(
+        grepl("error_|skipped_|unhandled_error", model_status, ignore.case=TRUE) ~ term_no_backticks, # Term is already base snp_name
+        grepl("^roh_[02]_", term_no_backticks) ~ sub("^roh_[02]_", "", term_no_backticks),
+        TRUE ~ term_no_backticks # Assumes additive term is just snp_name (after backtick removal)
+      )
+    ) %>%
+    left_join(snp_map_plink %>% dplyr::select(snp.name, chromosome, position, allele.1, allele.2),
+              by = c("snp.name.extracted" = "snp.name")) %>%
+    dplyr::select(-snp.name.extracted, -term_no_backticks) # Clean up temporary columns
+  
+  output_filename <- file.path(output_dir, paste0("GWAS_ROH_birds_part_", part, ".rds"))
+  saveRDS(final_results_df_part, file = output_filename)
+  print(paste("R_SCRIPT: Results for part", part, "saved to", output_filename, ". Rows:", nrow(final_results_df_part)))
+} else {
+  print(paste("R_SCRIPT: WARNING - No results compiled to save for part", part))
+  # Create a dummy file indicating no results for this part, to help tracking
+  writeLines(paste("No results generated for part", part, "at", as.character(Sys.time())),
+             file.path(output_dir, paste0("GWAS_ROH_birds_part_", part, "_NO_RESULTS.txt")))
+}
+
+#  15. Script End 
+print(paste("R_SCRIPT: Finished processing part", part, "at", Sys.time()))
+
+```
+
+```{r gwas_postprocess, eval = FALSE, echo = TRUE, tidy=FALSE}
+# Load, combine and analyse results from the ROH GWAS for annual survival.
+# It expects part files (RDS format)..
+# The script performs the following:
+#   1. Loads and combines all GWAS part files.
+#   2. Inspects initial SNP map data (chromosome, position) from RDS files.
+#   3. Loads SNP map data directly from the PLINK BIM file.
+#   4. Re-joins SNP map information if it's missing or incomplete in the RDS files,
+#      attempting to match SNP names.
+#   5. Prepares data for Manhattan plots by calculating cumulative genomic positions.
+#   6. Conducts statistical summaries (e.g., binomial tests on effect directions).
+#   7. Generates and saves plots:
+#      - Histograms of effect sizes and p-values for ROH effects.
+#      - Manhattan plots for ROH effects and Additive SNP effects.
+#      - Combined summary plot for ROH effects.
+#
+# Output:
+# Console output summarizing data processing and statistical tests.
+# PNG image files of plots saved to a 'figs/' subdirectory.
+#
+# Input files:
+#   - RDS part files from the main GWAS script (in 'output/' directory by default).
+#   - PLINK BIM file (for SNP map information).
+
+#  0. Load Libraries and Setup 
+print(paste("Script started at:", Sys.time()))
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(viridis)
+  library(patchwork)
+  library(data.table)
+  library(broom)
+})
+
+# Create output directory for figures if it doesn't exist
+figs_output_dir <- "figs"
+if (!dir.exists(figs_output_dir)) {
+  dir.create(figs_output_dir, recursive = TRUE)
+  print(paste("Created figures output directory:", figs_output_dir))
+}
+options(scipen = 999) # Avoid scientific notation in plot axes or outputs
+
+#  1. Define File Paths and Load Combined GWAS Results 
+# Directory where GWAS part files (.rds) are saved
+gwas_parts_dir <- "output"
+# PLINK file prefix (used to find the .bim file)
+plink_file_prefix <- "mergedimputedautosomesextrasamplesfilteredcorrectedmaf0.01miss0.01deduplicatedrenamedchrrenamed"
+
+gwas_files <- list.files(gwas_parts_dir, pattern = "GWAS_ROH_birds_part_.*\\.rds$", full.names = TRUE)
+if (length(gwas_files) == 0) {
+  stop(paste("No GWAS result part files found matching pattern in:", gwas_parts_dir))
+}
+print(paste("Found", length(gwas_files), "GWAS result part files to load."))
+
+all_gwas_dfs <- purrr::map(gwas_files, readRDS)
+raw_gwas_results <- bind_rows(all_gwas_dfs)
+print(paste("Loaded and combined all GWAS parts. Total rows in raw_gwas_results:", nrow(raw_gwas_results)))
+
+#  Inspect raw_gwas_results for initial state of map information 
+print(" Initial inspection of map info from loaded RDS files ")
+if (nrow(raw_gwas_results) > 0) {
+  cols_to_show <- intersect(c("term", "chromosome", "position", "model_status"), colnames(raw_gwas_results))
+  print("Sample of raw_gwas_results (selected columns):")
+  print(head(raw_gwas_results[, cols_to_show]))
+  if ("chromosome" %in% colnames(raw_gwas_results) && "position" %in% colnames(raw_gwas_results)) {
+    print(paste("Proportion of NAs in raw_gwas_results$chromosome:", round(mean(is.na(raw_gwas_results$chromosome)), 3)))
+    print(paste("Proportion of NAs in raw_gwas_results$position:", round(mean(is.na(raw_gwas_results$position)), 3)))
+  } else {
+    # If these columns are entirely missing, add them as NA so subsequent steps don't fail
+    print("Warning: chromosome or position columns not found in raw_gwas_results. Adding them as NA.")
+    raw_gwas_results$chromosome <- NA_integer_
+    raw_gwas_results$position   <- NA_integer_
+    raw_gwas_results$allele.1   <- NA_character_
+    raw_gwas_results$allele.2   <- NA_character_
+  }
+} else {
+  stop("raw_gwas_results is empty after loading RDS files. No data to process.")
+}
+
+#  2. Basic Processing of GWAS Results (Clean terms, derive snp.name and state) 
+gwas_cleaned_terms <- raw_gwas_results %>%
+  mutate(term = gsub("`", "", term))
+
+fixed_covariates_to_remove <- c(
+  "(Intercept)", "SexMale", "SexFemale", "SexUNKNOWN", # Adjust Sex levels based on your model output
+  "AnnualDeathRate", "Age_std", "Age_std2", "MaternalAge_std",
+  paste0("pc", 1:5) # 5 PCs
+)
+
+# Filter for successful models, fixed effects, and remove known non-SNP covariates
+gwas_snp_terms_only <- gwas_cleaned_terms %>%
+  filter(grepl("success|convergence_issue", model_status, ignore.case = TRUE)) %>% # Keep models that ran
+  filter(effect == "fixed") %>% # Focus on fixed effects
+  filter(!term %in% fixed_covariates_to_remove) %>%
+  filter(!str_detect(term, "^froh_no_chr")) # Remove chromosome-specific FROH covariates
+
+# Derive 'state' (add, roh_0, roh_2) and clean 'snp_id_temp' (precursor to snp.name)
+gwas_res_intermediate <- gwas_snp_terms_only %>%
+  mutate(
+    state = case_when(
+      str_detect(term, "^roh_0_") ~ "roh_0",
+      str_detect(term, "^roh_2_") ~ "roh_2",
+      TRUE ~ "add" # Default to additive effect for remaining terms
+    ),
+    snp_id_temp = case_when( # Extract base SNP identifier
+      state == "roh_0" ~ str_remove(term, "^roh_0_"),
+      state == "roh_2" ~ str_remove(term, "^roh_2_"),
+      state == "add"   ~ term
+    )
+  )
+
+# Select columns, renaming original map info from RDS to '.rds' suffix for clarity before potential re-join
+gwas_res_from_rds <- gwas_res_intermediate %>%
+  select(
+    snp.name = snp_id_temp, term, estimate, std.error, statistic, p.value, state,
+    chromosome.rds = chromosome, position.rds = position,
+    allele.1.rds = allele.1, allele.2.rds = allele.2,
+    n_obs, time, model_status, effect, group # Keep other useful columns
+  )
+print(paste(" gwas_res_from_rds created with", nrow(gwas_res_from_rds), "SNP-related terms. "))
+if (nrow(gwas_res_from_rds) > 0) {
+  print(paste("Proportion NAs for chromosome.rds in gwas_res_from_rds:", round(mean(is.na(gwas_res_from_rds$chromosome.rds)),3)))
+}
+
+#  3. Load PLINK BIM File for SNP Map Information 
+bim_file_path <- paste0(plink_file_prefix, ".bim")
+snps_map_from_bim <- NULL
+
+if (file.exists(bim_file_path)) {
+  print(paste("Loading BIM file for SNP map:", bim_file_path))
+  tryCatch({
+    snps_map_from_bim <- fread(bim_file_path, header = FALSE,
+                               col.names = c("chromosome.bim", "snp.name.bim", "cm.bim", "position.bim", "A1.bim", "A2.bim")) %>%
+      as_tibble() %>%
+      select(snp.name.bim, chromosome.bim, position.bim, A1.bim, A2.bim) %>%
+      distinct(snp.name.bim, .keep_all = TRUE) # Ensure unique SNP names from BIM
+    print(paste("Loaded snps_map_from_bim with", ifelse(is.null(snps_map_from_bim), 0, nrow(snps_map_from_bim)), "unique SNPs."))
+    if (!is.null(snps_map_from_bim) && nrow(snps_map_from_bim) > 0) {
+      print("Sample of snp.name.bim from PLINK BIM file (for join comparison):")
+      print(head(snps_map_from_bim$snp.name.bim))
+      print("Sample of snp.name from gwas_res_from_rds (for join comparison):")
+      print(head(gwas_res_from_rds$snp.name))
+    }
+  }, error = function(e) {
+    warning(paste("Could not load BIM file using fread. Error:", e$message), immediate. = TRUE)
+  })
+} else {
+  warning(paste("BIM file not found:", bim_file_path, ". Cannot load SNP map information for re-join if needed."), immediate. = TRUE)
+}
+
+#  4. Consolidate SNP Map Information (Re-join if Necessary) 
+gwas_res_final <- gwas_res_from_rds # Initialize with data from RDS
+
+needs_rejoin <- if ("chromosome.rds" %in% names(gwas_res_from_rds)) {
+  mean(is.na(gwas_res_from_rds$chromosome.rds)) > 0.5
+} else {
+  TRUE # If column doesn't exist, it needs to be added
+}
+
+if (needs_rejoin && !is.null(snps_map_from_bim) && nrow(snps_map_from_bim) > 0) {
+  print("Chromosome/Position info from RDS files is largely NA or missing. Attempting re-join with BIM map data.")
+  
+  snps_map_to_join <- snps_map_from_bim
+  join_col_gwas    <- "snp.name"
+  join_col_bim     <- "snp.name.bim"
+  print(paste("Attempting join using '", join_col_gwas, "' from GWAS results and '", join_col_bim, "' from BIM map.", sep=""))
+  
+  gwas_res_final <- gwas_res_from_rds %>%
+    left_join(snps_map_to_join, by = setNames(join_col_bim, join_col_gwas)) %>%
+    mutate( # Use BIM info if join successful, otherwise keep original (even if NA)
+      chromosome = coalesce(chromosome.bim, chromosome.rds),
+      position   = coalesce(position.bim,   position.rds),
+      allele.1   = coalesce(A1.bim,         allele.1.rds),
+      allele.2   = coalesce(A2.bim,         allele.2.rds)
+    ) %>%
+    select(-any_of(c("chromosome.bim", "position.bim", "A1.bim", "A2.bim", "cm.bim",
+                     "chromosome.rds", "position.rds", "allele.1.rds", "allele.2.rds")))
+  print("Re-join attempted. NA proportions for final map info:")
+  print(paste("Prop. NAs in gwas_res_final$chromosome:", round(mean(is.na(gwas_res_final$chromosome)), 3)))
+  print(paste("Prop. NAs in gwas_res_final$position:",   round(mean(is.na(gwas_res_final$position)), 3)))
+  if (mean(is.na(gwas_res_final$chromosome)) > 0.5) {
+    warning("Re-join did NOT resolve NAs for map info. SNP name matching FAILED. Please check formats.", immediate. = TRUE)
+  }
+} else if (needs_rejoin && (is.null(snps_map_from_bim) || nrow(snps_map_from_bim) == 0)) {
+  warning("Map info from RDS is largely NA, and BIM map data could not be loaded/is empty. Map info will remain missing.", immediate. = TRUE)
+  gwas_res_final <- gwas_res_from_rds %>% # Fallback
+    rename(chromosome = chromosome.rds, position = position.rds, allele.1 = allele.1.rds, allele.2 = allele.2.rds)
+} else {
+  print("Map info from RDS files seems adequate or re-join not needed. Using RDS map info directly.")
+  gwas_res_final <- gwas_res_from_rds %>%
+    rename(chromosome = chromosome.rds, position = position.rds, allele.1 = allele.1.rds, allele.2 = allele.2.rds)
+}
+
+#  5. Prepare Final Data (`gwas_full`) for Plotting and Analysis 
+gwas_full <- gwas_res_final %>%
+  mutate(chromosome_num = case_when( # Ensure numeric chromosome for plotting
+    toupper(as.character(chromosome)) == "X"  ~ 27L, # Adjust numbers if needed
+    toupper(as.character(chromosome)) == "Y"  ~ 28L,
+    toupper(as.character(chromosome)) == "MT" ~ 29L,
+    TRUE ~ suppressWarnings(as.integer(as.character(chromosome)))
+  )) %>%
+  filter(!is.na(chromosome_num), !is.na(position)) # Critical filter: remove rows with no valid map info
+
+if (nrow(gwas_full) == 0) {
+  stop("CRITICAL ERROR: `gwas_full` is empty after filtering for NA chromosome/position.
+        This means map information is missing or could not be joined correctly. Cannot proceed.")
+}
+print(paste("Rows in `gwas_full` ready for plotting and analysis:", nrow(gwas_full)))
+
+# Calculate cumulative positions for Manhattan plots
+# Version 1: With inter-chromosome gaps (for main Manhattan plots)
+chr_lengths_gaps <- gwas_full %>%
+  filter(!is.na(chromosome_num) & !is.na(position)) %>% # Ensure NAs are out before summarise
+  group_by(chromosome_num) %>%
+  summarise(chr_len = max(as.numeric(position), na.rm = TRUE), .groups = 'drop') %>%
+  filter(!is.na(chr_len)) %>% arrange(chromosome_num) %>%
+  mutate(
+    gap_size = 35e6, # Fixed gap size between chromosomes
+    chr_order_idx = row_number(),
+    tot_bp_no_gap = cumsum(as.numeric(chr_len)) - as.numeric(chr_len), # Start of chr if no gaps
+    cumulative_start_pos_gaps = tot_bp_no_gap + ((chr_order_idx - 1) * gap_size)
+  ) %>% select(chromosome_num, cumulative_start_pos_gaps)
+
+# Version 2: No large inter-chromosome gaps (for potentially more compact additive plot)
+chr_lengths_no_gaps <- gwas_full %>%
+  filter(!is.na(chromosome_num) & !is.na(position)) %>%
+  group_by(chromosome_num) %>%
+  summarise(chr_len = max(as.numeric(position), na.rm = TRUE), .groups = 'drop') %>%
+  filter(!is.na(chr_len)) %>% arrange(chromosome_num) %>%
+  mutate(
+    cumulative_start_pos_no_gaps = cumsum(as.numeric(chr_len)) - as.numeric(chr_len)
+  ) %>% select(chromosome_num, cumulative_start_pos_no_gaps)
+
+gwas_full <- gwas_full %>%
+  left_join(chr_lengths_gaps, by = "chromosome_num") %>%
+  left_join(chr_lengths_no_gaps, by = "chromosome_num") %>%
+  mutate(
+    positive_cum_gaps = as.numeric(position) + cumulative_start_pos_gaps,
+    positive_cum_no_gaps = as.numeric(position) + cumulative_start_pos_no_gaps
+  ) %>%
+  arrange(chromosome_num, position) # Sort for plotting
+
+if (anyNA(gwas_full$positive_cum_gaps) || anyNA(gwas_full$positive_cum_no_gaps)) {
+  warning("NA values found in cumulative positions. Plotting may be affected.", immediate. = TRUE)
+}
+
+#  6. Statistical Summaries 
+print(" Statistical Summaries of Effect Directions ")
+# ROH effects
+roh_neg_pos_counts <- gwas_full %>%
+  filter(state != "add", !is.na(estimate)) %>%
+  mutate(eff_direction = ifelse(estimate < 0, "negative", "positive")) %>%
+  group_by(eff_direction) %>% tally()
+print("ROH effect direction counts:"); print(roh_neg_pos_counts)
+if (nrow(roh_neg_pos_counts) >= 2 && all(c("negative", "positive") %in% roh_neg_pos_counts$eff_direction)) {
+  binom_res_roh <- binom.test(x = roh_neg_pos_counts$n[roh_neg_pos_counts$eff_direction == "negative"], n = sum(roh_neg_pos_counts$n), p = 0.5)
+  print("Binomial test for ROH effect directions (H0: P(negative) = 0.5):"); print(binom_res_roh)
+}
+
+# Additive effects
+add_neg_pos_counts <- gwas_full %>%
+  filter(state == "add", !is.na(estimate)) %>%
+  mutate(eff_direction = ifelse(estimate < 0, "negative", "positive")) %>%
+  group_by(eff_direction) %>% tally()
+print("Additive effect direction counts:"); print(add_neg_pos_counts)
+if (nrow(add_neg_pos_counts) >= 2 && all(c("negative", "positive") %in% add_neg_pos_counts$eff_direction)) {
+  binom_res_add <- binom.test(x = add_neg_pos_counts$n[add_neg_pos_counts$eff_direction == "negative"], n = sum(add_neg_pos_counts$n), p = 0.5)
+  print("Binomial test for Additive effect directions (H0: P(negative) = 0.5):"); print(binom_res_add)
+}
+
+# Logistic regression tests for ROH effects
+gwas_roh_for_glm <- gwas_full %>%
+  filter(state != "add", !is.na(p.value), is.finite(p.value), !is.na(estimate), is.finite(estimate)) %>%
+  mutate(eff_factor = factor(ifelse(estimate < 0, "negative", "positive"), levels = c("positive", "negative"))) # Negative as success
+
+if (nrow(gwas_roh_for_glm) > 20 && n_distinct(gwas_roh_for_glm$eff_factor) == 2) {
+  print("Logistic regression (ROH): eff_factor ~ p.value"); print(tidy(glm(eff_factor ~ p.value, data = gwas_roh_for_glm, family = "binomial"), conf.int = TRUE))
+  print("Logistic regression (ROH): eff_factor ~ abs(estimate)"); print(tidy(glm(eff_factor ~ abs(estimate), data = gwas_roh_for_glm, family = "binomial"), conf.int = TRUE))
+  print("Logistic regression (ROH): eff_factor ~ p.value + abs(estimate)"); print(tidy(glm(eff_factor ~ p.value + abs(estimate), data = gwas_roh_for_glm, family = "binomial"), conf.int = TRUE))
+} else {
+  print("Skipping logistic regressions for ROH effects due to insufficient data or distinct outcomes.")
+}
+
+
+#  7. Plotting 
+print(" Generating Plots (saved to figs/ directory) ")
+plot_colors_viridis <- viridis(2)
+
+# Prepare data for ROH plots
+gwas_plot_roh_data <- gwas_full %>%
+  filter(state != "add") %>%
+  filter(!is.na(p.value) & is.finite(p.value) & !is.na(positive_cum_gaps) & !is.na(estimate)) %>%
+  mutate(direction = ifelse(estimate < 0, "negative", "positive"),
+         log10_pvalue = -log10(p.value)) %>%
+  filter(is.finite(log10_pvalue)) # Ensure -log10(p) is finite
+
+# Helper function to create placeholder if no data
+create_placeholder_plot <- function(title_text) {
+  ggplot() + theme_void() + annotate("text", x=0.5, y=0.5, label=title_text) + ggtitle(title_text)
+}
+is_valid_plot_data <- function(df) { inherits(df, "data.frame") && nrow(df) > 0 }
+
+# Plot 1: Histogram of ROH effect sizes
+p1_roh_effsize <- create_placeholder_plot("No ROH data for Effect Size Plot")
+if (is_valid_plot_data(gwas_plot_roh_data)) {
+  p1_roh_effsize <- gwas_plot_roh_data %>%
+    ggplot(aes(abs(estimate), fill = direction)) +
+    geom_histogram(bins = 80, position = "identity", alpha = 0.7) +
+    theme_classic(base_size = 10) + # Smaller base_size for potentially busy plots
+    theme(axis.line.y = element_blank(), axis.text = element_text(color = "black"),
+          plot.title = element_text(hjust = 0.5), legend.title = element_text(size=9), legend.text = element_text(size=8)) +
+    scale_fill_manual("Effect Direction", values = plot_colors_viridis) +
+    scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+    xlab("Absolute Estimate (ROH, log-odds survival)") + ylab("Number of SNP Terms") +
+    ggtitle("Distribution of ROH Effect Sizes")
+  print(p1_roh_effsize)
+}
+
+# Plot 2: Histogram of ROH p-values
+p3_roh_pvalue <- create_placeholder_plot("No ROH data for P-value Plot")
+if (is_valid_plot_data(gwas_plot_roh_data)) {
+  p3_roh_pvalue <- gwas_plot_roh_data %>%
+    ggplot(aes(p.value, fill = direction)) +
+    geom_histogram(bins = 80, position = "identity", alpha = 0.7) +
+    theme_classic(base_size = 10) +
+    theme(axis.line.y = element_blank(), axis.text = element_text(color = "black"),
+          plot.title = element_text(hjust = 0.5), legend.title = element_text(size=9), legend.text = element_text(size=8)) +
+    scale_fill_manual("Effect Direction", values = plot_colors_viridis) +
+    scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+    ylab("Number of SNP Terms") + xlab(expression(italic(p) - value)) +
+    ggtitle("Distribution of ROH P-values")
+  print(p3_roh_pvalue)
+}
+
+# Plot 3: Manhattan plot for ROH effects (uses `positive_cum_gaps`)
+axis_df_gaps <- gwas_plot_roh_data %>% filter(!is.na(chromosome_num)) %>% group_by(chromosome_num) %>%
+  summarise(center = median(positive_cum_gaps, na.rm=TRUE), .groups = 'drop') %>%
+  filter(!is.na(center)) %>% arrange(chromosome_num)
+
+chr_plot_labels_gaps <- as.character(axis_df_gaps$chromosome_num)
+if (n_distinct(gwas_plot_roh_data$chromosome_num) > 15) {
+  chr_plot_labels_gaps <- ifelse(axis_df_gaps$chromosome_num %% 2 == 1 |
+                                   axis_df_gaps$chromosome_num == min(axis_df_gaps$chromosome_num) |
+                                   axis_df_gaps$chromosome_num == max(axis_df_gaps$chromosome_num),
+                                 as.character(axis_df_gaps$chromosome_num), "")
+}
+# Bonferroni threshold: number of unique SNP terms tested for ROH effects
+num_roh_snp_terms <- nrow(gwas_plot_roh_data)
+bonf_thresh_log10_roh <- if (num_roh_snp_terms > 0) -log10(0.05 / num_roh_snp_terms) else 4
+
+# Subsample for Manhattan plot if too many points
+gwas_manhattan_roh_df <- gwas_plot_roh_data
+if (nrow(gwas_plot_roh_data) > 400000) {
+  print(paste("Subsampling ROH data for Manhattan plot from", nrow(gwas_plot_roh_data), "to ~200k points"))
+  significant_pts <- gwas_plot_roh_data %>% filter(log10_pvalue >= (bonf_thresh_log10_roh * 0.8))
+  non_significant_pts <- gwas_plot_roh_data %>% filter(log10_pvalue < (bonf_thresh_log10_roh * 0.8))
+  num_to_sample <- max(0, 200000 - nrow(significant_pts))
+  if(nrow(non_significant_pts) > num_to_sample && num_to_sample > 0) {
+    non_significant_pts <- sample_n(non_significant_pts, num_to_sample)
+  } else if (nrow(non_significant_pts) > 0 && num_to_sample == 0 && nrow(significant_pts) < 200000 && nrow(significant_pts) > 0) {
+    non_significant_pts <- sample_n(non_significant_pts, min(nrow(non_significant_pts), 50000) )
+  } else if (nrow(significant_pts) == 0 && nrow(non_significant_pts) > 200000) { # If no significant points
+    non_significant_pts <- sample_n(non_significant_pts, 200000)
+  }
+  gwas_manhattan_roh_df <- bind_rows(significant_pts, non_significant_pts)
+}
+
+pgwas_roh <- create_placeholder_plot("No ROH data for Manhattan Plot")
+if (is_valid_plot_data(gwas_manhattan_roh_df) && nrow(axis_df_gaps) > 0) {
+  pgwas_roh <- ggplot(gwas_manhattan_roh_df, aes(x = positive_cum_gaps, y = log10_pvalue)) +
+    geom_hline(yintercept = bonf_thresh_log10_roh, linetype = "dashed", color = "grey50") +
+    geom_point(aes(color = factor(chromosome_num %% 2)), size = 0.9, alpha = 0.6) +
+    geom_point(data = . %>% filter(log10_pvalue > bonf_thresh_log10_roh),
+               aes(fill = direction), size = 2.3, shape = 21, stroke = 0.3, color = "black") +
+    scale_x_continuous(labels = chr_plot_labels_gaps, breaks = axis_df_gaps$center, expand = c(0.01, 0.01)) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05)), limits = c(0, NA)) +
+    xlab("Chromosome") + ylab(expression(-log[10](italic(p)))) +
+    scale_color_manual(values = c("0" = "#B8B8B8", "1" = "#A0A0A0")) +
+    scale_fill_manual("Effect Direction", values = plot_colors_viridis) +
+    theme_classic(base_size = 10) +
+    theme(axis.text = element_text(color = "black"), axis.ticks = element_line(linewidth = 0.2),
+          legend.position = "top", plot.title = element_text(hjust = 0.5),
+          legend.title = element_text(size=9), legend.text = element_text(size=8)) +
+    guides(color = "none") + ggtitle("Manhattan Plot: ROH Effects")
+  print(pgwas_roh)
+}
+
+# Plot 4: Combined ROH plot
+is_actual_ggplot <- function(p) { inherits(p, "ggplot") && !isTRUE(p$theme$void) }
+if (is_actual_ggplot(p1_roh_effsize) && is_actual_ggplot(p3_roh_pvalue) && is_actual_ggplot(pgwas_roh) ) {
+  p_combined_roh <- (p1_roh_effsize + p3_roh_pvalue) / pgwas_roh +
+    plot_layout(guides = 'collect', heights = c(1, 1.8)) + # Collect legends from all plots
+    plot_annotation(tag_levels = 'A') &
+    theme(plot.tag = element_text(face = "bold"), legend.position = "top") # Apply to overall collected legend
+  print(p_combined_roh)
+  ggsave(file.path(figs_output_dir, "GWAS_ROH_Combined_Plot.png"),
+         p_combined_roh, width = 10, height = 7.5, units = "in", dpi = 300, bg = "white")
+} else { print("One or more ROH plots were placeholders; skipping combined ROH plot.")}
+
+# Plot 5: Manhattan plot for Additive effects (uses `positive_cum_no_gaps`)
+gwas_plot_add_data <- gwas_full %>%
+  filter(state == "add") %>%
+  filter(!is.na(p.value) & is.finite(p.value) & !is.na(positive_cum_no_gaps) & !is.na(estimate)) %>%
+  mutate(direction = ifelse(estimate < 0, "negative", "positive"),
+         log10_pvalue = -log10(p.value)) %>%
+  filter(is.finite(log10_pvalue))
+
+axis_df_no_gaps <- gwas_plot_add_data %>% filter(!is.na(chromosome_num)) %>% group_by(chromosome_num) %>%
+  summarise(center = median(positive_cum_no_gaps, na.rm=TRUE), .groups = 'drop') %>%
+  filter(!is.na(center)) %>% arrange(chromosome_num)
+
+chr_plot_labels_no_gaps <- as.character(axis_df_no_gaps$chromosome_num)
+if (n_distinct(gwas_plot_add_data$chromosome_num) > 15) {
+  chr_plot_labels_no_gaps <- ifelse(axis_df_no_gaps$chromosome_num %% 2 == 1 |
+                                      axis_df_no_gaps$chromosome_num == min(axis_df_no_gaps$chromosome_num) |
+                                      axis_df_no_gaps$chromosome_num == max(axis_df_no_gaps$chromosome_num),
+                                    as.character(axis_df_no_gaps$chromosome_num), "")
+}
+
+num_add_snp_terms <- nrow(gwas_plot_add_data)
+bonf_thresh_log10_add <- if (num_add_snp_terms > 0) -log10(0.05 / num_add_snp_terms) else 4
+
+gwas_manhattan_add_df <- gwas_plot_add_data # Subsampling for additive plot
+if (nrow(gwas_plot_add_data) > 400000) {
+  print(paste("Subsampling additive data for Manhattan plot from", nrow(gwas_plot_add_data), "to ~200k points"))
+  significant_pts_add <- gwas_plot_add_data %>% filter(log10_pvalue >= (bonf_thresh_log10_add * 0.8))
+  non_significant_pts_add <- gwas_plot_add_data %>% filter(log10_pvalue < (bonf_thresh_log10_add * 0.8))
+  num_to_sample_add <- max(0, 200000 - nrow(significant_pts_add))
+  if(nrow(non_significant_pts_add) > num_to_sample_add && num_to_sample_add > 0) {
+    non_significant_pts_add <- sample_n(non_significant_pts_add, num_to_sample_add)
+  } else if (nrow(non_significant_pts_add) > 0 && num_to_sample_add == 0 && nrow(significant_pts_add) < 200000 && nrow(significant_pts_add) > 0) {
+    non_significant_pts_add <- sample_n(non_significant_pts_add, min(nrow(non_significant_pts_add), 50000))
+  } else if (nrow(significant_pts_add) == 0 && nrow(non_significant_pts_add) > 200000) {
+    non_significant_pts_add <- sample_n(non_significant_pts_add, 200000)
+  }
+  gwas_manhattan_add_df <- bind_rows(significant_pts_add, non_significant_pts_add)
+}
+
+pgwas_add <- create_placeholder_plot("No Additive data for Manhattan Plot")
+if (is_valid_plot_data(gwas_manhattan_add_df) && nrow(axis_df_no_gaps) > 0) {
+  pgwas_add <- ggplot(gwas_manhattan_add_df, aes(x = positive_cum_no_gaps, y = log10_pvalue)) +
+    geom_hline(yintercept = bonf_thresh_log10_add, linetype = "dashed", color = "grey50") +
+    geom_point(aes(color = factor(chromosome_num %% 2)), size = 0.9, alpha = 0.6) +
+    geom_point(data = . %>% filter(log10_pvalue > bonf_thresh_log10_add),
+               aes(fill = direction), size = 2.3, shape = 21, stroke = 0.3, color = "black") +
+    scale_x_continuous(labels = chr_plot_labels_no_gaps, breaks = axis_df_no_gaps$center, expand = c(0.01,0.01)) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05)), limits = c(0, NA)) +
+    xlab("Chromosome") + ylab(expression(-log[10](italic(p)))) +
+    scale_color_manual(values = c("0" = "#DCDCDC", "1" = "#C0C0C0")) +
+    scale_fill_manual("Effect Direction", values = plot_colors_viridis) +
+    theme_classic(base_size = 10) +
+    theme(axis.text = element_text(color = "black"), axis.ticks = element_line(linewidth = 0.2),
+          legend.position = "top", plot.title = element_text(hjust = 0.5),
+          legend.title = element_text(size=9), legend.text = element_text(size=8)) +
+    guides(color = "none") + ggtitle("Manhattan Plot: Additive SNP Effects")
+  print(pgwas_add)
+  ggsave(file.path(figs_output_dir, "GWAS_Additive_Manhattan_Plot.png"),
+         pgwas_add, width = 10, height = 4.5, units = "in", dpi = 300, bg = "white")
+}
+
+print(paste("Script finished at:", Sys.time()))
+```
+ 
+## Ch.2 Inbreeding avoidance
+
+Calculate relatedness of all pedigree pairs and how that matches up to pairwise relatedness of all adults that were alive at the same time. 
+
+```{r inbreeding_avoidance, eval = TRUE, echo = TRUE}
+
+
+# Ensure the necessary columns are of the same type (character)
+Lifespan$BirdID <- as.character(Lifespan$BirdID)
+
+
+# Merge Rel.both with Lifespan for IID1 and IID2
+Rel.both.alive <- Rel.both %>%
+  left_join(Lifespan, by = c("IID1" = "BirdID"), suffix = c("_1", "_"))
+Rel.both.alive <- Rel.both.alive %>%
+  left_join(Lifespan, by = c("IID2" = "BirdID"), suffix = c("_1", "_2"))
+
+# Check for overlap in BirthYear and LastSeenYear
+Rel.both.alive <- Rel.both.alive %>%
+  filter(BirthYear_1 <= LastSeenYear_2 & BirthYear_2 <= LastSeenYear_1)
+
+masterped_nonmissing <- masterped[!is.na(masterped$dam) & !is.na(masterped$sire), ]
+
+# Ensure both are data frames
+masterped_nonmissing <- as.data.frame(masterped_nonmissing)
+Rel.both.alive <- as.data.frame(Rel.both.alive)
+
+# Create a helper column to represent the two possible pairings
+masterped_nonmissing$pair1 <- paste(masterped_nonmissing$dam, masterped_nonmissing$sire, sep = "_")
+masterped_nonmissing$pair2 <- paste(masterped_nonmissing$dam, masterped_nonmissing$sire, sep = "_")
+
+# Create a new column in Rel.both.alive for the pair combination of IID1 and IID2
+Rel.both.alive$pair <- paste(Rel.both.alive$IID1, Rel.both.alive$IID2, sep = "_")
+
+# Subset Rel.both.alive to include only rows where the pair is present in masterped_nonmissing
+Rel.both.alive.partners <- Rel.both.alive %>%
+  filter(pair %in% masterped_nonmissing$pair1 | pair %in% masterped_nonmissing$pair2)
+
+
+# Calculate the mean of Rel.both.alive.partners$R.GRM
+mean_R_GRM <- mean(Rel.both.alive.partners$R.GRM, na.rm = TRUE)
+mean_R_GRM
+# Create a ggplot2 histogram for Rel.both.alive$R.GRM with the mean line
+ggplot(Rel.both.alive, aes(x = R.GRM)) +
+  geom_histogram(binwidth = 0.1, fill = "lightblue", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean_R_GRM, color = "red", linetype = "dashed", size = 1.5) +
+  labs(title = "Histogram of R.GRM", x = "R.GRM", y = "Frequency") +
+  theme_minimal()
+
+rm(Rel.both)
+rm(Rel.both.alive)
+```
+## Ch.2 Translocations
+
+Which birds to translocate. Ordering surviving, genotyped birds by inbreeding coefficients are an example of how this research can be applied in targeted translocations for outbreeding.
+
+```{r translocations, eval = TRUE, echo = TRUE}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+
+# 1. Filter for living birds
+living_birds_df <- SeychellesWarblerTraitsCorrected %>%
+  filter(LastSeenYear == 2024)
+
+# 2. Select relevant columns and identify the delta FROH columns
+delta_froh_cols <- c("FROH_2.5", "ΔFROH_5", "ΔFROH_25", "ΔFROH_50", "ΔFROH_250", "ΔFROH_500", "ΔFROH_2500")
+
+living_birds_hbd <- living_birds_df %>%
+  select(BirdID, all_of(delta_froh_cols), FROH_5) # Including FROH_5 for ordering
+
+# 3. Calculate Total HBD for ordering (using FROH_all or sum of deltas)
+# If FROH_all is suitable for ordering:
+living_birds_hbd <- living_birds_hbd %>%
+  arrange(desc(FROH_5)) # Order by total inbreeding (most inbred first)
+
+
+# 4. Reshape data to long format for ggplot
+living_birds_hbd_long <- living_birds_hbd %>%
+  pivot_longer(cols = all_of(delta_froh_cols),
+               names_to = "ROH_Age_Class",
+               values_to = "HBD_Segment_Length") %>%
+  mutate(HBD_Segment_Length = ifelse(is.na(HBD_Segment_Length), 0, HBD_Segment_Length)) # Replace NA with 0 for plotting
+
+# 5. Create an ordered factor for ROH_Age_Class
+# This order will affect stacking. If you want ancient at the bottom, list them first.
+class_levels <- c("ΔFROH_2500", "ΔFROH_500", "ΔFROH_250", "ΔFROH_50", "ΔFROH_25", "ΔFROH_5","FROH_2.5")
+class_labels <- c("~2500", "~500", "~250", "~50", "~25", "~5","~2.5")
+
+living_birds_hbd_long$ROH_Age_Class_Factor <- factor(living_birds_hbd_long$ROH_Age_Class,
+                                                    levels = class_levels,
+                                                    labels = class_labels)
+
+# Ensure BirdID is a factor and ordered according to FROH_all
+living_birds_hbd_long$BirdID_Factor <- factor(living_birds_hbd_long$BirdID,
+                                             levels = unique(living_birds_hbd$BirdID))
+
+
+# 6. Create the plot
+hbd_plot <- ggplot(living_birds_hbd_long, aes(x = BirdID_Factor, y = HBD_Segment_Length, fill = ROH_Age_Class_Factor)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_brewer(palette = "Paired", name = "Generations to MRCA") + # Choose a nice color palette
+  labs(
+       x = "BirdIDs (ordered by recent inbreeding)",
+       y = "Cumulative HBD Segment Length (Mb)") + # Specify units if known
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6), # Rotate x-axis labels if many birds
+        plot.title = element_text(hjust = 0.5))
+
+# Print the plot
+print(hbd_plot)
+
+# To save the plot:
+# ggsave("living_birds_hbd_plot.png", plot = hbd_plot, width = 12, height = 7, dpi = 300)
+```
+
+## Ch.2 Demographic history
+
+Demographic history inference using linkage disequilibrium (LD) of pairs of loci in GONE. 11420278 SNPs and 1657 individuals initially from genotyping rate \> 0.99 and individuals removed by genotyping rate \> 0.96. GONE is only good for the past 100 generations.
+
+```{r demographic_history, eval = TRUE, echo = TRUE, tidy=FALSE}
+#Generation time calculation
+##add parent birth date from "BirthDate" to "Offspring"
+BirthDate$Parent<-BirthDate$BirdID
+OffspringParentBirthDate<-merge(Offspring, BirthDate, by= "Parent", all =TRUE)
+OffspringParentBirthDate$ParentBirthDate<-OffspringParentBirthDate$BirthDate.y
+
+##calculate mean birth date difference
+OffspringParentBirthDate$BirthDateDifference<-OffspringParentBirthDate$BirthDate.x-OffspringParentBirthDate$ParentBirthDate
+BirthDateDifference<-(!is.na (OffspringParentBirthDate$BirthDateDifference))
+BirthDateDifference <- subset(OffspringParentBirthDate$BirthDateDifference, !is.na(OffspringParentBirthDate$BirthDateDifference))
+
+mean(OffspringParentBirthDate$BirthDateDifference, na.rm = TRUE)
+1764/365.25 ##4.83 generation time
+
+#Deduplicate samples for GONE as it doesn't handle duplicates and they will need renaming
+DeduplicatedforGONE<-data.frame(rep("0",length(Seychelles_warbler_traits$Filepath)),Seychelles_warbler_traits$Filepath)
+write.table(DeduplicatedforGONE, file = "DeduplicatedforGONE.txt", sep = "\t",
+            col.names = F, row.names = F, quote = FALSE)
+
+#Load output from GONE
+GONE<-read.table("Output_Ne_goneinputreimputed_0",header=F, fill=TRUE) #Recomb 1, 20,000SNPs looks good
+GONE <- GONE[3:102, ]
+GONE<- GONE  %>% select(-c(V3:V6))
+rownames(GONE) <- NULL
+colnames(GONE) <- c("Generation", "RUN1")
+
+# Loop through additional files
+for (j in 1:49) {
+  run <- read.table(paste("Output_Ne_goneinputreimputed_", j, sep = ""), fill = TRUE, header = FALSE)
+  run <- run[3:102, ] # Adjust row selection as needed
+  run <- run %>% select(-c(V3:V6)) # Remove unnecessary columns
+  GONE <- cbind(GONE, run[, 2]) # Append new columns
+  colnames(GONE)[ncol(GONE)] <- paste("RUN", j + 1, sep = "") # Rename columns
+}
+
+# Initialize vectors to store results
+mean.ne <- numeric(nrow(GONE))    # Mean vector
+sd.ne <- numeric(nrow(GONE))      # Standard deviation vector
+upr <- numeric(nrow(GONE))        # Upper bound vector
+lwr <- numeric(nrow(GONE))        # Lower bound vector
+
+# Calculate mean, standard deviation, and bounds
+for (i in 1:nrow(GONE)) {
+  row_data <- as.numeric(GONE[i, -1])  # Convert the row to numeric, excluding the first column
+  mean_value <- mean(row_data, na.rm = TRUE)  # Calculate mean
+  sd_value <- sd(row_data, na.rm = TRUE)      # Calculate standard deviation
+  
+  # Store calculated values
+  mean.ne[i] <- mean_value
+  sd.ne[i] <- sd_value
+  upr[i] <- mean_value + sd_value  # Upper bound (mean + SD)
+  lwr[i] <- mean_value - sd_value  # Lower bound (mean - SD)
+}
+
+# Add the calculated values as new columns to the data frame
+GONE$MEAN <- mean.ne
+GONE$LWR <- lwr
+GONE$UPR <- upr
+
+# Prepare data for plotting
+plot_data <- GONE %>%
+  select(Generation, MEAN, LWR, UPR) %>%
+  mutate(Generation = as.integer(Generation))
+
+# Plot with geom_ribbon to show standard deviation
+p <- ggplot(plot_data, aes(x = Generation)) +
+  geom_line(aes(y = MEAN), color = "black", size = 1.2) +
+  geom_ribbon(aes(ymin = LWR, ymax = UPR), fill = "darksalmon", alpha = 0.3) +
+  xlab("Generations before present") +
+  ylab("Ne (Effective Population Size)") +
+  theme_classic() 
+  #labs(title = "Effective Population Size with Standard Deviation")
+
+p
+
+##confidence intervals
+# Initialize vectors to store results
+mean.ne <- numeric(nrow(GONE))    # Mean vector
+sd.ne <- numeric(nrow(GONE))      # Standard deviation vector
+upr <- numeric(nrow(GONE))        # Upper bound vector
+lwr <- numeric(nrow(GONE))        # Lower bound vector
+
+# Define the critical value for a 95% CI (Z-value for large samples)
+critical_value <- qnorm(0.975)  # For 95% CI, two-tailed
+
+# Calculate mean, standard error, and bounds
+for (i in 1:nrow(GONE)) {
+  row_data <- as.numeric(GONE[i, -1])  # Convert the row to numeric, excluding the first column
+  mean_value <- mean(row_data, na.rm = TRUE)  # Calculate mean
+  sd_value <- sd(row_data, na.rm = TRUE)      # Calculate standard deviation
+  n <- length(row_data)  # Number of observations
+  sem <- sd_value / sqrt(n)  # Calculate Standard Error of the Mean
+  
+  # Store calculated values
+  mean.ne[i] <- mean_value
+  sd.ne[i] <- sd_value
+  upr[i] <- mean_value + critical_value * sem  # Upper bound (mean + CI)
+  lwr[i] <- mean_value - critical_value * sem  # Lower bound (mean - CI)
+}
+
+# Add the calculated values as new columns to the data frame
+GONE$MEAN <- mean.ne
+GONE$LWR <- lwr
+GONE$UPR <- upr
+
+# Prepare data for plotting
+plot_data2 <- GONE %>%
+  select(Generation, MEAN, LWR, UPR) %>%
+  mutate(Generation = as.integer(Generation))
+
+# Plot with geom_ribbon to show confidence intervals
+r <- ggplot(plot_data2, aes(x = Generation)) +
+  geom_line(aes(y = MEAN), color = "black", size = 1.2) +
+  geom_ribbon(aes(ymin = LWR, ymax = UPR), fill = 'orange', alpha = 0.3) +
+  xlab("Generations before present") +
+  ylab("Ne (Effective Population Size)") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 20),            # Default text size
+    axis.title.x = element_text(size = 20, margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, margin = margin(r = 15)),
+    axis.text = element_text(size = 12),        # Axis tick labels
+    plot.title = element_text(size = 32, face = "bold"),  # Title
+    legend.text = element_text(size = 16),      # Legend text
+    legend.title = element_text(size = 20),
+    legend.position = "bottom"
+)
+r
+
+#Current Ne is 20.7
+mean(as.numeric(unlist(GONE[GONE$Generation == 1, ])), na.rm = TRUE)
+
+#Ne at worst point
+mean(as.numeric(unlist(GONE[GONE$Generation == 9, ])), na.rm = TRUE)
+
+# Find the minimum Ne generation and value (if not already done)
+min_ne_gen <- plot_data2$Generation[which.min(plot_data2$MEAN)]
+min_ne_val <- min(plot_data2$MEAN)
+
+# Define Custom Axis Breaks
+
+x_range <- range(plot_data2$Generation, na.rm = TRUE)
+y_range <- range(c(plot_data2$LWR, plot_data2$UPR), na.rm = TRUE) # Use confidence interval range
+
+x_breaks_default <- scales::breaks_pretty()(x_range)
+x_breaks_custom <- sort(unique(c(x_breaks_default, min_ne_gen)))
+x_breaks_custom <- x_breaks_custom[x_breaks_custom >= x_range[1] & x_breaks_custom <= x_range[2]]
+
+y_breaks_default <- scales::breaks_pretty()(y_range)
+y_breaks_custom <- sort(unique(c(y_breaks_default, min_ne_val)))
+y_breaks_custom <- y_breaks_custom[y_breaks_custom >= 0]
+
+y_labels_custom <- sapply(y_breaks_custom, function(br) {
+  if (abs(br - min_ne_val) < 1e-6) {
+    sprintf("%.1f", br)
+  } else {
+    sprintf("%.0f", br)
+  }
+})
+
+
+
+r_touching_axes <- r + 
+
+  geom_point(aes(x = min_ne_gen, y = min_ne_val), color = "red", size = 3) +
+  geom_segment(aes(x = min_ne_gen, xend = min_ne_gen,
+                   y = 0, yend = min_ne_val), # Assuming y-axis should include 0
+               color = "red", linetype = "dashed", size = 0.8) +
+  geom_segment(aes(x = x_range[1], xend = min_ne_gen, # Assuming x-axis starts at first generation
+                   y = min_ne_val, yend = min_ne_val),
+               color = "red", linetype = "dashed", size = 0.8) +
+
+  scale_x_continuous(breaks = x_breaks_custom,
+                     expand = expansion(mult = 0, add = 0)) +
+  scale_y_continuous(breaks = y_breaks_custom,
+                     labels = y_labels_custom,
+                     expand = expansion(mult = 0, add = 0))
+
+# Display the updated plot
+print(r_touching_axes)
+
+# Print the values for confirmation
+print(paste("Adding tick mark for Generation:", min_ne_gen))
+print(paste("Adding tick mark for Ne:", round(min_ne_val, 2)))
+
+
+```
